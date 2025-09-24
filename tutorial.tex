@@ -866,67 +866,67 @@ introducing a \emph{predicate} to describe an
 $\mathsf{account}$ struct instance in the function contracts.
 \begin{lstlisting}
 /*@
-predicate account_pred(struct account *myAccount, int theLimit, int theBalance) =
-    myAccount->limit |-> theLimit &*& myAccount->balance |-> theBalance
-    &*& malloc_block_account(myAccount);
+pred Account_pred(my_account: *mut Account, theLimit: i32, theBalance: i32) =
+    (*my_account).limit |-> theLimit &*& (*my_account).balance |-> theBalance &*&
+    alloc_block_Account(my_account);
 @*/
 \end{lstlisting}
 A predicate is a named, parameterized assertion. Furthermore, it introduces a new type of heap chunk.
-An \lstinline!account_pred! heap chunk bundles an \lstinline!account_limit! heap chunk, an \lstinline!account_balance! heap chunk,
-and a \lstinline!malloc_block_account! heap chunk into one.
+An \lstinline!Account_pred! heap chunk bundles an \lstinline!Account_limit! heap chunk, an \lstinline!Account_balance! heap chunk,
+and an \lstinline!alloc_block_Account! heap chunk into one.
 
 Let's use this predicate to rewrite the contract of the deposit function. Here's a first attempt:
 \begin{lstlisting}
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires account_pred(myAccount, ?limit, ?balance) &*& 0 <= amount;
-    //@ ensures account_pred(myAccount, limit, balance + amount);
+unsafe fn deposit(my_account: *mut Account, amount: i32)
+//@ req Account_pred(my_account, ?limit, ?balance) &*& 0 <= amount;
+//@ ens Account_pred(my_account, limit, balance + amount);
 {
-    myAccount->balance += amount;
+    (*my_account).balance += amount;
 }
 \end{lstlisting}
 This function does not verify. The update of the
 \lstinline!balance! field cannot be verified since there is no
-\lstinline!account_balance! heap chunk in the symbolic heap.
-There is only a \lstinline!account_pred! heap chunk. The
-\lstinline!account_pred! heap chunk encapsulates the
-\lstinline!account_balance! heap chunk, but VeriFast does not
-``un-bundle'' the \lstinline!account_pred! predicate
+\lstinline!Account_balance! heap chunk in the symbolic heap.
+There is only an \lstinline!Account_pred! heap chunk. The
+\lstinline!Account_pred! heap chunk encapsulates the
+\lstinline!Account_balance! heap chunk, but VeriFast does not
+``un-bundle'' the \lstinline!Account_pred! predicate
 automatically. We must instruct VeriFast to un-bundle predicate
 heap chunks by inserting an \lstinline!open! ghost statement:
 \begin{lstlisting}
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires account_pred(myAccount, ?limit, ?balance) &*& 0 <= amount;
-    //@ ensures account_pred(myAccount, limit, balance + amount);
+unsafe fn deposit(my_account: *mut Account, amount: i32)
+//@ req Account_pred(my_account, ?limit, ?balance) &*& 0 <= amount;
+//@ ens Account_pred(my_account, limit, balance + amount);
 {
-    //@ open account_pred(myAccount, limit, balance);
-    myAccount->balance += amount;
+    //@ open Account_pred(my_account, limit, balance);
+    (*my_account).balance += amount;
 }
 \end{lstlisting}
 The assignment now verifies, but now VeriFast is stuck at the
 postcondition. It complains that it cannot find the
-\lstinline!account_pred! heap chunk that it is supposed to hand
-back to the function's caller. The \lstinline!account_pred!
+\lstinline!Account_pred! heap chunk that it is supposed to hand
+back to the function's caller. The \lstinline!Account_pred!
 chunk's constituent chunks are present in the symbolic heap,
 but VeriFast does not automatically bundle them up into an
-\lstinline!account_pred! chunk. We must instruct VeriFast to do
+\lstinline!Account_pred! chunk. We must instruct VeriFast to do
 so using a \lstinline!close! ghost statement:
 \begin{lstlisting}
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires account_pred(myAccount, ?limit, ?balance) &*& 0 <= amount;
-    //@ ensures account_pred(myAccount, limit, balance + amount);
+unsafe fn deposit(my_account: *mut Account, amount: i32)
+//@ req Account_pred(my_account, ?limit, ?balance) &*& 0 <= amount;
+//@ ens Account_pred(my_account, limit, balance + amount);
 {
-    //@ open account_pred(myAccount, limit, balance);
-    myAccount->balance += amount;
-    //@ close account_pred(myAccount, limit, balance + amount);
+    //@ open Account_pred(my_account, limit, balance);
+    (*my_account).balance += amount;
+    //@ close Account_pred(my_account, limit, balance + amount);
 }
 \end{lstlisting}
 The function now verifies. However, the main function does not,
-since the call of \lstinline!account_deposit! expects an
-\lstinline!account_pred! heap chunk.
+since the call of \lstinline!Account::deposit! expects an
+\lstinline!Account_pred! heap chunk.
 
 \begin{exercise}\label{exercise:pred}
 Rewrite the remaining contracts using the
-\lstinline!account_pred! predicate. Insert \lstinline!open! and
+\lstinline!Account_pred! predicate. Insert \lstinline!open! and
 \lstinline!close! statements as necessary.
 \end{exercise}
 
@@ -4667,7 +4667,7 @@ fn main()
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:deposit}: deposit.c}
+\subsection{Exercise \ref{exercise:deposit}: deposit.rs}
 
 \begin{lstlisting}
 unsafe fn deposit(my_account: *mut Account, amount: i32)
@@ -4746,90 +4746,107 @@ impl Account {
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:pred}: pred.c}
+\subsection{Exercise \ref{exercise:pred}: pred.rs}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
+//@ use std::alloc::{alloc_block, Layout};
 
-struct account {
-    int limit;
-    int balance;
-};
+struct Account {
+    limit: i32,
+    balance: i32,
+}
 
 /*@
-predicate account_pred(struct account *myAccount, int theLimit, int theBalance) =
-    myAccount->limit |-> theLimit &*& myAccount->balance |-> theBalance
-    &*& malloc_block_account(myAccount);
+
+pred Account_pred(my_account: *mut Account, theLimit: i32, theBalance: i32) =
+    (*my_account).limit |-> theLimit &*& (*my_account).balance |-> theBalance &*&
+    alloc_block_Account(my_account);
+
 @*/
 
-struct account *create_account(int limit)
-    //@ requires limit <= 0;
-    //@ ensures account_pred(result, limit, 0);
-{
-    struct account *myAccount = malloc(sizeof(struct account));
-    if (myAccount == 0) { abort(); }
-    myAccount->limit = limit;
-    myAccount->balance = 0;
-    //@ close account_pred(myAccount, limit, 0);
-    return myAccount;
+impl Account {
+
+    unsafe fn create(limit: i32) -> *mut Account
+    //@ req limit <= 0;
+    //@ ens Account_pred(result, limit, 0);
+    {
+        let my_account = alloc(Layout::new::<Account>()) as *mut Account;
+        if my_account.is_null() {
+            handle_alloc_error(Layout::new::<Account>());
+        }
+        (*my_account).limit = limit;
+        (*my_account).balance = 0;
+        //@ close Account_pred(my_account, limit, 0);
+        my_account
+    }
+
+    unsafe fn get_balance(my_account: *mut Account) -> i32
+    //@ req Account_pred(my_account, ?limit, ?balance);
+    //@ ens Account_pred(my_account, limit, balance) &*& result == balance;
+    {
+        //@ open Account_pred(my_account, limit, balance);
+        let result = (*my_account).balance;
+        //@ close Account_pred(my_account, limit, balance);
+        result
+    }
+
+    unsafe fn deposit(my_account: *mut Account, amount: i32)
+    //@ req Account_pred(my_account, ?limit, ?balance) &*& 0 <= amount;
+    //@ ens Account_pred(my_account, limit, balance + amount);
+    {
+        //@ open Account_pred(my_account, limit, balance);
+        (*my_account).balance += amount;
+        //@ close Account_pred(my_account, limit, balance + amount);
+    }
+
+    unsafe fn withdraw(my_account: *mut Account, amount: i32) -> i32
+    //@ req Account_pred(my_account, ?limit, ?balance) &*& 0 <= amount;
+    /*@
+    ens Account_pred(my_account, limit, balance - result) &*&
+        result == if balance - amount < limit { balance - limit } else { amount };
+    @*/
+    {
+        //@ open Account_pred(my_account, limit, balance);
+        let result =
+            if (*my_account).balance - amount < (*my_account).limit {
+                (*my_account).balance - (*my_account).limit
+            } else {
+                amount
+            };
+        (*my_account).balance -= result;
+        //@ close Account_pred(my_account, limit, balance - result);
+        result
+    }
+
+    unsafe fn dispose(my_account: *mut Account)
+    //@ req Account_pred(my_account, _, _);
+    //@ ens true;
+    {
+        //@ open Account_pred(my_account, _, _);
+        dealloc(my_account as *mut u8, Layout::new::<Account>());
+    }
+
 }
 
-int account_get_balance(struct account *myAccount)
-    //@ requires account_pred(myAccount, ?limit, ?balance);
-    //@ ensures account_pred(myAccount, limit, balance) &*& result == balance;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    //@ open account_pred(myAccount, limit, balance);
-    int result = myAccount->balance;
-    //@ close account_pred(myAccount, limit, balance);
-    return result;
-}
-
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires account_pred(myAccount, ?limit, ?balance) &*& 0 <= amount;
-    //@ ensures account_pred(myAccount, limit, balance + amount);
-{
-    //@ open account_pred(myAccount, limit, balance);
-    myAccount->balance += amount;
-    //@ close account_pred(myAccount, limit, balance + amount);
-}
-
-int account_withdraw(struct account *myAccount, int amount)
-    //@ requires account_pred(myAccount, ?limit, ?balance) &*& 0 <= amount;
-    /*@ ensures account_pred(myAccount, limit, balance - result)
-            &*& result == (balance - amount < limit ? balance - limit : amount); @*/
-{
-    //@ open account_pred(myAccount, limit, balance);
-    int result = myAccount->balance - amount < myAccount->limit ?
-        myAccount->balance - myAccount->limit : amount;
-    myAccount->balance -= result;
-    //@ close account_pred(myAccount, limit, balance - result);
-    return result;
-}
-
-void account_dispose(struct account *myAccount)
-    //@ requires account_pred(myAccount, _, _);
-    //@ ensures true;
-{
-    //@ open account_pred(myAccount, _, _);
-    free(myAccount);
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct account *myAccount = create_account(-100);
-    account_deposit(myAccount, 200);
-    int w1 = account_withdraw(myAccount, 50);
-    assert(w1 == 50);
-    int b1 = account_get_balance(myAccount);
-    assert(b1 == 150);
-    int w2 = account_withdraw(myAccount, 300);
-    assert(w2 == 250);
-    int b2 = account_get_balance(myAccount);
-    assert(b2 == -100);
-    account_dispose(myAccount);
-    return 0;
+    unsafe {
+        let my_account = Account::create(-100);
+        Account::deposit(my_account, 200);
+        let w1 = Account::withdraw(my_account, 50);
+        std::hint::assert_unchecked(w1 == 50);
+        let b1 = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b1 == 150);
+        let w2 = Account::withdraw(my_account, 300);
+        std::hint::assert_unchecked(w2 == 250);
+        let b2 = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b2 == -100);
+        Account::dispose(my_account);
+    }
 }
 \end{lstlisting}
 
