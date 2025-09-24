@@ -506,35 +506,42 @@ heap or on the stack.
 
 We continue to play with the example of the previous section.
 The example currently consists of only one function: the main
-function. Let's add another function. Write a function
-$\mathsf{account\_set\_balance}$ that takes the address of an
-$\mathsf{account}$ struct instance and a integer amount, and
+function. Let's add another function. Write an $\mathsf{Account}$ associated function
+$\mathsf{set\_balance}$ that takes a pointer to an
+$\mathsf{Account}$ struct instance and a integer amount, and
 assigns this amount to the struct instance's $\mathsf{balance}$
 field. Then replace the field assignment in the main function
 with a call to this function. We now have the following
 program:
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
 
-struct account {
-    int balance;
-};
-
-void account_set_balance(struct account *myAccount, int newBalance)
-{
-    myAccount->balance = newBalance;
+struct Account {
+    balance: i32
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
+impl Account {
+
+    unsafe fn set_balance(my_account: *mut Account, new_balance: i32) {
+        (*my_account).balance = new_balance;
+    }
+
+}
+
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct account *myAccount = malloc(sizeof(struct account));
-    if (myAccount == 0) { abort(); }
-    account_set_balance(myAccount, 5);
-    free(myAccount);
-    return 0;
+    unsafe {
+        let my_account = alloc(Layout::new::<Account>()) as *mut Account;
+        if my_account.is_null() {
+            handle_alloc_error(Layout::new::<Account>());
+        }
+        Account::set_balance(my_account, 5);
+        dealloc(my_account as *mut u8, Layout::new::<Account>());
+    }
 }
 \end{lstlisting}
 
@@ -546,37 +553,37 @@ final state of calls of the function.
 
 Add the same contract that the main function has:
 \begin{lstlisting}
-void account_set_balance(struct account *myAccount, int newBalance)
-    //@ requires true;
-    //@ ensures true;
+unsafe fn set_balance(my_account: *mut Account, new_balance: i32)
+//@ req true;
+//@ ens true;
 \end{lstlisting}
 Notice that contracts, like all VeriFast annotations, are in
-comments, so that the C compiler ignores them. VeriFast also
+comments, so that the Rust compiler ignores them. VeriFast also
 ignores comments, except the ones that are marked with an at
 (\verb|@|) sign.
 
 VeriFast now no longer complains about missing contracts.
 However, it now complains that the field assignment in the body
-of $\mathsf{account\_set\_balance}$ cannot be verified because
+of $\mathsf{Account{::}set\_balance}$ cannot be verified because
 the symbolic heap does not contain a heap chunk that grants
 permission to access this field. To fix this, we need to
 specify in the function's precondition that the function
 requires permission to access the $\mathsf{balance}$ field of
-the $\mathsf{account}$ struct instance at address
-$\mathsf{myAccount}$. We achieve this simply by mentioning the
+the $\mathsf{Account}$ struct instance pointed to by
+$\mathsf{my\_account}$. We achieve this simply by mentioning the
 heap chunk in the precondition:
 \begin{lstlisting}
-void account_set_balance(struct account *myAccount, int newBalance)
-    //@ requires account_balance_(myAccount, _);
-    //@ ensures true;
+unsafe fn set_balance(my_account: *mut Account, new_balance: i32)
+//@ req Account_balance_(my_account, _);
+//@ ens true;
 \end{lstlisting}
 Notice that we use an underscore in the position where the
 state of the field belongs. This indicates that we do not care
 about the old state of the field when the function is
 called.\footnote{VeriFast also supports a more concise syntax
 for field chunks. For example,
-\lstinline!account_balance_(myAccount, _)! can also be written as
-\lstinline!myAccount->balance |-> _!.
+\lstinline!Account_balance_(my_account, _)! can also be written as
+\lstinline!(*my_account).balance |-> _!.
 In fact, the latter (field chunk-specific) syntax is generally recommended
 over the former (generic chunk) syntax because it causes
 VeriFast to take into account the field chunk-specific information that there is at most one
@@ -592,32 +599,32 @@ message by inserting a $\mathbf{leak}$ command, which indicates
 that we're happy to leak this heap chunk. We will come back to
 this later.
 \begin{lstlisting}
-void account_set_balance(struct account *myAccount, int newBalance)
-    //@ requires account_balance_(myAccount, _);
-    //@ ensures true;
+unsafe fn set_balance(my_account: *mut Account, new_balance: i32)
+//@ req Account_balance_(my_account, _);
+//@ ens true;
 {
-    myAccount->balance = newBalance;
-    //@ leak account_balance(myAccount, _);
+    (*my_account).balance = new_balance;
+    //@ leak Account_balance(my_account, _);
 }
 \end{lstlisting}
 
-Function $\mathsf{account\_set\_balance}$ now verifies, and
+Function $\mathsf{Account::set\_balance}$ now verifies, and
 VeriFast attempts to verify function $\mathsf{main}$. It
-complains that it cannot free the $\mathsf{account}$ struct
+complains that it cannot deallocate the $\mathsf{Account}$ struct
 instance because it does not have permission to access the
 $\mathsf{balance}$ field. Indeed, the symbolic heap contains
-the $\mathsf{malloc\_block\_account}$ chunk but not the
-$\mathsf{account\_balance}$ chunk. What happened to it? Let's
+the $\mathsf{alloc\_block\_Account}$ chunk but not the
+$\mathsf{Account\_balance}$ chunk. What happened to it? Let's
 find out by stepping through the symbolic execution path.
-Select the second step. The $\mathsf{malloc}$ statement is about
+Select the fourth step. The $\mathsf{alloc}$ statement is about
 to be executed and the symbolic heap is empty. Select the next
-step. The $\mathsf{malloc}$ statement has added the
-$\mathsf{account\_balance\_}$ chunk and the
-$\mathsf{malloc\_block\_account}$ chunk.
+step. The $\mathsf{alloc}$ statement has added the
+$\mathsf{Account\_balance\_}$ chunk and the
+$\mathsf{alloc\_block\_Account}$ chunk.
 
 The if statement has no effect.
 
-We then arrive at the call of $\mathsf{account\_set\_balance}$.
+We then arrive at the call of $\mathsf{Account{::}set\_balance}$.
 You will notice that this execution step has two sub-steps,
 labeled ``Consuming assertion'' and ``Producing assertion''.
 The verification of a function call consists of
@@ -651,17 +658,17 @@ part of the contract being consumed or produced is shown on a
 yellow background. If you move from the ``Consuming assertion''
 step to the ``Producing assertion'' step, you notice that the
 ``Consuming assertion'' step removes the
-$\mathsf{account\_balance\_}$ chunk from the symbolic heap.
+$\mathsf{Account\_balance\_}$ chunk from the symbolic heap.
 Conceptually, it is now in use by the
-$\mathsf{account\_set\_balance}$ function while the
+$\mathsf{Account{::}set\_balance}$ function while the
 $\mathsf{main}$ function waits for this function to return.
-Since function $\mathsf{account\_set\_balance}$'s postcondition
+Since function $\mathsf{Account{::}set\_balance}$'s postcondition
 does not mention any heap chunks, the ``Producing assertion''
 step does not add anything to the symbolic heap.
 
 It is now clear why VeriFast complained that
-$\mathsf{account\_set\_balance}$ leaked heap chunks: since the
-function did not return the $\mathsf{account\_balance}$ chunk
+$\mathsf{Account{::}set\_balance}$ leaked heap chunks: since the
+function did not return the $\mathsf{Account\_balance}$ chunk
 to its caller, the chunk was lost and the field could never be
 accessed again. VeriFast considers this an error since it is
 usually not the intention of the programmer; furthermore, if
@@ -669,28 +676,28 @@ too many memory locations are leaked, the program will run out
 of memory.
 
 It is now also clear how to fix the error: we must specify in
-the postcondition of function $\mathsf{account\_set\_balance}$
+the postcondition of function $\mathsf{Account{::}set\_balance}$
 that the function must hand back the
-$\mathsf{account\_balance}$ chunk to its caller.
+$\mathsf{Account\_balance}$ chunk to its caller.
 \begin{lstlisting}
-void account_set_balance(struct account *myAccount, int newBalance)
-    //@ requires account_balance_(myAccount, _);
-    //@ ensures account_balance(myAccount, newBalance);
+unsafe fn set_balance(my_account: *mut Account, new_balance: i32)
+//@ req Account_balance_(my_account, _);
+//@ ens Account_balance(my_account, new_balance);
 {
-    myAccount->balance = newBalance;
+    (*my_account).balance = new_balance;
 }
 \end{lstlisting}
  This
 eliminates the leak error message and the error at the
-$\mathit{free}$ statement. The program now verifies. Notice
-that we refer to the $\mathsf{newBalance}$ parameter in the
+$\mathit{dealloc}$ statement. The program now verifies. Notice
+that we refer to the $\mathsf{new_balance}$ parameter in the
 position where the value of the field belongs; this means that
 the value of the field when the function returns must be equal
 to the value of the parameter.
 
 \begin{exercise}\label{exercise:account}
 Now factor out the creation and the disposal of the
-$\mathsf{account}$ struct instance into separate functions as
+$\mathsf{Account}$ struct instance into separate functions as
 well. The creation function should initialize the balance to
 zero. Note: if you need to mention multiple heap chunks in an
 assertion, separate them using the \emph{separating conjunction}
@@ -4524,7 +4531,7 @@ directory \lstinline!tutorial! of the VeriFast distribution).
 
 \section{Solutions to Exercises}
 
-Note: all of the solutions are also available in directory \verb|tutorial_solutions| of the VeriFast distribution.
+Note: all of the solutions are also available in directory \verb|rust_tutorials| of the VeriFast distribution.
 
 \subsection{Exercise \ref{exercise:symex-tree}}
 
@@ -4601,47 +4608,55 @@ See Figure~\ref{fig:symex-tree}. Note: there are many alternative ways to expres
 \caption{Symbolic execution tree of the program of Figure~\ref{figure:illegal-access1} (after uncommenting the \lstinline|if| statement). We abbreviate \textbf{Chunks} as \textbf{C}, \textbf{Locals} as \textbf{L}, \lstinline|Account| as \lstinline|Acc|, \lstinline|balance| as \lstinline|bal|, \lstinline|my_account| as \lstinline|a|, and $\mathsf{alloc\_block}$ as $\mathsf{ab}$. Note that the tree is shown fully: the \lstinline|alloc| node has only two child nodes: the second child node summarizes (practically) infinitely many corresponding child nodes from the concrete execution tree. We print symbols in slanted font ($\mathsfsl{a}$) to avoid confusion with similarly named local variables (\lstinline|a|).}\label{fig:symex-tree}
 \end{figure}
 
-\subsection{Exercise \ref{exercise:account}: account.c}
+\subsection{Exercise \ref{exercise:account}: account.rs}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
 
-struct account {
-    int balance;
-};
-
-struct account *create_account()
-    //@ requires true;
-    //@ ensures account_balance(result, 0) &*& malloc_block_account(result);
-{
-    struct account *myAccount = malloc(sizeof(struct account));
-    if (myAccount == 0) { abort(); }
-    myAccount->balance = 0;
-    return myAccount;
+struct Account {
+    balance: i32,
 }
 
-void account_set_balance(struct account *myAccount, int newBalance)
-    //@ requires account_balance(myAccount, _);
-    //@ ensures account_balance(myAccount, newBalance);
-{
-    myAccount->balance = newBalance;
+impl Account {
+
+    unsafe fn create() -> *mut Account
+    //@ req true;
+    //@ ens Account_balance(result, 0) &*& alloc_block_Account(result);
+    {
+        let my_account = alloc(Layout::new::<Account>()) as *mut Account;
+        if my_account.is_null() {
+            handle_alloc_error(Layout::new::<Account>());
+        }
+        (*my_account).balance = 0;
+        my_account
+    }
+
+    unsafe fn set_balance(my_account: *mut Account, new_balance: i32)
+    //@ req Account_balance(my_account, _);
+    //@ ens Account_balance(my_account, new_balance);
+    {
+        (*my_account).balance = new_balance;
+    }
+
+    unsafe fn dispose(my_account: *mut Account)
+    //@ req Account_balance(my_account, _) &*& alloc_block_Account(my_account);
+    //@ ens true;
+    {
+        dealloc(my_account as *mut u8, Layout::new::<Account>());
+    }
+
 }
 
-void account_dispose(struct account *myAccount)
-    //@ requires account_balance(myAccount, _) &*& malloc_block_account(myAccount);
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    free(myAccount);
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct account *myAccount = create_account();
-    account_set_balance(myAccount, 5);
-    account_dispose(myAccount);
-    return 0;
+    unsafe {
+        let my_account = Account::create();
+        Account::set_balance(my_account, 5);
+        Account::dispose(my_account);
+    }
 }
 \end{lstlisting}
 
