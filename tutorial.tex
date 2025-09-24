@@ -712,23 +712,28 @@ Now, let's add a function that returns the current balance, and
 let's test it in the main function. Here's our first attempt:
 
 \begin{lstlisting}
-int account_get_balance(struct account *myAccount)
-    //@ requires account_balance(myAccount, _);
-    //@ ensures account_balance(myAccount, _);
-{
-    return myAccount->balance;
+impl Account { 
+
+    unsafe fn get_balance(my_account: *mut Account) -> i32
+    //@ req Account_balance(my_account, _);
+    //@ ens Account_balance(my_account, _);
+    {
+        (*my_account).balance
+    }    
+
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct account *myAccount = create_account();
-    account_set_balance(myAccount, 5);
-    int b = account_get_balance(myAccount);
-    assert(b == 5);
-    account_dispose(myAccount);
-    return 0;
+    unsafe {
+        let my_account = Account::create();
+        Account::set_balance(my_account, 5);
+        let b = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b == 5);
+        Account::dispose(my_account);
+    }
 }
 \end{lstlisting}
 
@@ -746,7 +751,7 @@ only assumption in this case is $\mathsf{true}$, VeriFast
 cannot prove the condition.
 
 The problem is that the postcondition of function
-$\mathsf{account\_get\_balance}$ does not specify the
+$\mathsf{Account{::}get\_balance}$ does not specify the
 function's return value. It does not state that the return
 value is equal to the value of the $\mathsf{balance}$ field
 when the function is called. To fix this, we need to be able to
@@ -761,12 +766,12 @@ the function's postcondition under the name \lstinline!result!.
 Logical conditions and heap chunks in an assertion must be
 separated using the separating conjunction \lstinline!&*&!.
 \begin{lstlisting}
-int account_get_balance(struct account *myAccount)
-    //@ requires account_balance(myAccount, ?theBalance);
-    //@ ensures account_balance(myAccount, theBalance) &*& result == theBalance;
+unsafe fn get_balance(my_account: *mut Account) -> i32
+//@ req Account_balance(my_account, ?theBalance);
+//@ ens Account_balance(my_account, theBalance) &*& result == theBalance;
 {
-    return myAccount->balance;
-}
+    (*my_account).balance
+}    
 \end{lstlisting}
 Notice that we use the \lstinline!theBalance! name also to
 specify that the function does not modify the value of the
@@ -775,10 +780,10 @@ value position in the postcondition.
 
 The program now verifies. Indeed, if we use the \textbf{Run to
 cursor} command to run to the $\mathit{assert}$ statement, we
-see that the assumption \lstinline!(= b 5)! has appeared in the
+see that the assumption \lstinline!b = 5! has appeared in the
 Assumptions pane. If we step up, we see that it was added when
 the equality condition in function
-$\mathsf{account\_get\_balance}$'s postcondition was produced.
+$\mathsf{Account{::}get\_balance}$'s postcondition was produced.
 If we step up further, we see that the variable
 \lstinline!theBalance! was added to the upper Locals pane when
 the field chunk assertion was consumed, and bound to value 5.
@@ -788,7 +793,7 @@ pane is used to evaluate the contract of the function being
 called. It initially contains the bindings of the function's
 parameters to the arguments specified in the call; additional
 bindings appear as patterns are encountered in the contract.
-The assumption \lstinline!(= b 5)! is the logical formula
+The assumption \lstinline!b = 5! is the logical formula
 obtained by evaluating the equality condition %
 \lstinline!result == theBalance! under the symbolic store shown
 in the upper Locals pane.
@@ -797,17 +802,18 @@ in the upper Locals pane.
 Add a function that deposits a given amount into an account.
 Verify the following \lstinline!main! function.
 \begin{lstlisting}[basicstyle=\ttfamily\upshape]
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct account *myAccount = create_account();
-    account_set_balance(myAccount, 5);
-    account_deposit(myAccount, 10);
-    int b = account_get_balance(myAccount);
-    assert(b == 15);
-    account_dispose(myAccount);
-    return 0;
+    unsafe {
+        let my_account = Account::create();
+        Account::set_balance(my_account, 5);
+        Account::deposit(my_account, 10);
+        let b = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b == 15);
+        Account::dispose(my_account);
+    }
 }
 \end{lstlisting}
 Note: VeriFast checks for arithmetic overflow. For now, disable
@@ -815,33 +821,34 @@ this check in the \textbf{Verify} menu.
 \end{exercise}
 
 \begin{exercise}\label{exercise:limit}
-Add a field \lstinline!limit! to struct \lstinline!account! that specifies the minimum balance of the account. (It is typically either zero or a negative number.)
+Add a field \lstinline!limit! to struct \lstinline!Account! that specifies the minimum balance of the account. (It is typically either zero or a negative number.)
 The limit is specified at creation time. Further add a function
 to withdraw a given amount from an account. The function must
 respect the limit; if withdrawing the requested amount would violate the limit, then the largest amount that can be withdrawn without violating the limit is withdrawn. The function
 returns the amount actually withdrawn as its return value. You
-will need to use C's conditional expressions
-\lstinline!condition ? value1 : value2!. Remove function
-\lstinline!account_set_balance!. Use the shorthand notation for
-field chunks: \lstinline!myAccount->balance |-> value!. Verify
+will need to use conditional expressions
+\lstinline!if condition { value1 } else { value2 }!. Remove function
+\lstinline!Account::set_balance!. Use the shorthand notation for
+field chunks: \lstinline!(*my_account).balance |-> value!. Verify
 the following \lstinline!main! function.
 \begin{lstlisting}[basicstyle=\ttfamily\upshape]
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct account *myAccount = create_account(-100);
-    account_deposit(myAccount, 200);
-    int w1 = account_withdraw(myAccount, 50);
-    assert(w1 == 50);
-    int b1 = account_get_balance(myAccount);
-    assert(b1 == 150);
-    int w2 = account_withdraw(myAccount, 300);
-    assert(w2 == 250);
-    int b2 = account_get_balance(myAccount);
-    assert(b2 == -100);
-    account_dispose(myAccount);
-    return 0;
+    unsafe {
+        let my_account = Account::create(-100);
+        Account::deposit(my_account, 200);
+        let w1 = Account::withdraw(my_account, 50);
+        std::hint::assert_unchecked(w1 == 50);
+        let b1 = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b1 == 150);
+        let w2 = Account::withdraw(my_account, 300);
+        std::hint::assert_unchecked(w2 == 250);
+        let b2 = Account::get_balance(my_account);
+        std::hint::assert_unchecked(b2 == -100);
+        Account::dispose(my_account);
+    }
 }
 \end{lstlisting}
 \end{exercise}
@@ -4663,65 +4670,79 @@ fn main()
 \subsection{Exercise \ref{exercise:deposit}: deposit.c}
 
 \begin{lstlisting}
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires account_balance(myAccount, ?theBalance) &*& 0 <= amount;
-    //@ ensures account_balance(myAccount, theBalance + amount);
+unsafe fn deposit(my_account: *mut Account, amount: i32)
+//@ req Account_balance(my_account, ?theBalance);
+//@ ens Account_balance(my_account, theBalance + amount);
 {
-    myAccount->balance += amount;
+    (*my_account).balance += amount;
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:limit}: limit.c}
+\subsection{Exercise \ref{exercise:limit}: limit.rs}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
+//@ use std::alloc::{alloc_block, Layout};
 
-struct account {
-    int limit;
-    int balance;
-};
-
-struct account *create_account(int limit)
-    //@ requires limit <= 0;
-    //@ ensures result->limit |-> limit &*& result->balance |-> 0 &*& malloc_block_account(result);
-{
-    struct account *myAccount = malloc(sizeof(struct account));
-    if (myAccount == 0) { abort(); }
-    myAccount->limit = limit;
-    myAccount->balance = 0;
-    return myAccount;
+struct Account {
+    limit: i32,
+    balance: i32,
 }
 
-int account_get_balance(struct account *myAccount)
-    //@ requires myAccount->balance |-> ?theBalance;
-    //@ ensures myAccount->balance |-> theBalance &*& result == theBalance;
-{
-    return myAccount->balance;
-}
+impl Account {
 
-void account_deposit(struct account *myAccount, int amount)
-    //@ requires myAccount->balance |-> ?theBalance;
-    //@ ensures myAccount->balance |-> theBalance + amount;
-{
-    myAccount->balance += amount;
-}
+    unsafe fn create(limit: i32) -> *mut Account
+    //@ req limit <= 0;
+    //@ ens (*result).limit |-> limit &*& (*result).balance |-> 0 &*& alloc_block_Account(result);
+    {
+        let my_account = alloc(Layout::new::<Account>()) as *mut Account;
+        if my_account.is_null() {
+            handle_alloc_error(Layout::new::<Account>());
+        }
+        (*my_account).limit = limit;
+        (*my_account).balance = 0;
+        my_account
+    }
 
-int account_withdraw(struct account *myAccount, int amount)
-    //@ requires myAccount->limit |-> ?limit &*& myAccount->balance |-> ?balance &*& 0 <= amount;
-    /*@ ensures myAccount->limit |-> limit &*& myAccount->balance |-> balance - result &*&
-            result == (balance - amount < limit ? balance - limit : amount); @*/
-{
-    int result = myAccount->balance - amount < myAccount->limit ?
-        myAccount->balance - myAccount->limit : amount;
-    myAccount->balance -= result;
-    return result;
-}
+    unsafe fn get_balance(my_account: *mut Account) -> i32
+    //@ req (*my_account).balance |-> ?theBalance;
+    //@ ens (*my_account).balance |-> theBalance &*& result == theBalance;
+    {
+        (*my_account).balance
+    }
 
-void account_dispose(struct account *myAccount)
-    //@ requires myAccount->limit |-> _ &*& myAccount->balance |-> _ &*& malloc_block_account(myAccount);
-    //@ ensures true;
-{
-    free(myAccount);
+    unsafe fn deposit(my_account: *mut Account, amount: i32)
+    //@ req (*my_account).balance |-> ?theBalance;
+    //@ ens (*my_account).balance |-> theBalance + amount;
+    {
+        (*my_account).balance += amount;
+    }
+
+    unsafe fn withdraw(my_account: *mut Account, amount: i32) -> i32
+    //@ req (*my_account).limit |-> ?limit &*& (*my_account).balance |-> ?balance &*& 0 <= amount;
+    /*@
+    ens (*my_account).limit |-> limit &*& (*my_account).balance |-> balance - result &*&
+        result == if balance - amount < limit { balance - limit } else { amount };
+    @*/
+    {
+        let result =
+            if (*my_account).balance - amount < (*my_account).limit {
+                (*my_account).balance - (*my_account).limit
+            } else {
+                amount
+            };
+        (*my_account).balance -= result;
+        result
+    }
+
+    unsafe fn dispose(my_account: *mut Account)
+    //@ req (*my_account).limit |-> _ &*& (*my_account).balance |-> _ &*& alloc_block_Account(my_account);
+    //@ ens true;
+    {
+        dealloc(my_account as *mut u8, Layout::new::<Account>());
+    }
+
 }
 \end{lstlisting}
 
