@@ -42,9 +42,9 @@
 
 \newtheorem{exercise}{Exercise}
 
-\title{The VeriFast Program Verifier: A Tutorial}
+\title{Verifying purely \texttt{unsafe} Rust programs with VeriFast: a tutorial}
 
-\author{Bart Jacobs \and Jan Smans \and Frank Piessens\\
+\author{Bart Jacobs\\
 {\small KU Leuven, Department of Computer Science, DistriNet Research Group}}
 
 \begin{document}
@@ -58,20 +58,18 @@
 
 \section{Introduction}
 
-VeriFast is a program verification tool for verifying certain
-correctness properties of single-threaded and multithreaded C\footnote{VeriFast also supports Java. See \emph{VeriFast for Java: A Tutorial}.}
-programs. The tool reads a C program consisting of one or more
-.c source code files (plus any .h header files referenced from
-these .c files) and reports either ``0 errors found'' or
+VeriFast is a tool for verifying the absence of undefined behavior\footnote{\url{https://doc.rust-lang.org/reference/behavior-considered-undefined.html}} in single-threaded and multithreaded Rust\footnote{VeriFast also supports C and Java. See \emph{The VeriFast Program Verifier: A Tutorial} and \emph{VeriFast for Java: A Tutorial}.}
+programs that use \lstinline|unsafe| blocks. The tool reads an
+\verb|.rs| source code file and reports either ``0 errors found'' or
 indicates the location of a potential error. If the tool
 reports ``0 errors found'', this means\footnote{There are a few
 known reasons (known as \emph{unsoundnesses}) why the tool may
-sometimes incorrectly report ``0 errors found''; see \textsf{soundness.md} at \textsf{https://github.com/verifast/verifast}. There
+sometimes incorrectly report ``0 errors found''; see \textsf{soundness.md} and \textsf{tests/rust/README.md} at \textsf{https://github.com/verifast/verifast} and \url{https://github.com/verifast/verifast/issues?q=is\%3Aissue\%20state\%3Aopen\%20label\%3Aunsoundness}. There
 may also be unknown unsoundnesses.} that the program
 \begin{itemize}
 \item does not perform illegal memory accesses, such as reading or
     writing a struct instance field after the struct instance has been
-    freed, or reading or writing beyond the end of an array (known as
+    deallocated, or reading or writing beyond the end of an array (known as
     a \emph{buffer overflow}, the most common cause of security
     vulnerabilities in operating systems and internet services) and
 \item does not include a certain type of concurrency errors known as
@@ -84,16 +82,16 @@ may also be unknown unsoundnesses.} that the program
     the source code.
 \end{itemize}
 
-Many errors in C programs, such as illegal memory accesses and
+Many errors in Rust programs that use \lstinline|unsafe| blocks, such as illegal memory accesses and
 data races, are generally very difficult to detect by
 conventional means such as testing or code review, since they
 are often subtle and typically do not cause a clean crash but
 have unpredictable effects that are difficult to diagnose.
-However, many security-critical and safety-critical programs,
+However, even many security-critical and safety-critical Rust programs,
 such as operating systems, device drivers, web servers (that
 may serve e-commerce or e-banking applications), embedded
 software for automobiles, airplanes, space applications,
-nuclear and chemical plants, etc.\ are written in C, where
+nuclear and chemical plants, etc.\ use \lstinline|unsafe| blocks, where
 these programming errors may enable cyber-attacks or cause
 injuries. For such programs, formal verification approaches
 such as VeriFast may be the most effective way to achieve the
@@ -128,19 +126,19 @@ at
 the tool (\texttt{verifast.exe}), and a version that presents a graphical
 user interface (\texttt{vfide.exe}).
 
-Throughout this tutorial, you will find exercises that ask you to annotate a small C program so that it is accepted by VeriFast. You can find solutions to all exercises at the end of this tutorial. Furthermore, un-annotated and annotated versions of each solution are included in the VeriFast distribution in directories \verb|tutorial| and \verb|tutorial_solutions|, respectively.
+Throughout this tutorial, you will find exercises that ask you to annotate a small Rust program so that it is accepted by VeriFast. You can find solutions to all exercises at the end of this tutorial. Furthermore, un-annotated and annotated versions of each solution are included in the VeriFast distribution in directories \verb|rust_tutorials/unsafe/problems| and \verb|rust_tutorials/unsafe/solutions|, respectively.
 
-\section{Example: illegal\_access.c}
+\section{Example: illegal\_access.rs}
 
 To illustrate how VeriFast can be used to detect programming
 errors that are difficult to spot through testing or code
-review, we start by applying the tool to a very simple C
+review, we start by applying the tool to a very simple Rust
 program that contains a subtle error.
 
-Please start \texttt{vfide.exe} with the \texttt{illegal\_access.c}
+Please start \texttt{vfide.exe} with the \texttt{illegal\_access.rs}
 program that can be downloaded from
 \begin{center}
-\texttt{https://www.cs.kuleuven.be/\symbol{126}bartj/verifast/illegal\_access.c}
+\texttt{https://www.cs.kuleuven.be/\symbol{126}bartj/verifast/illegal\_access.rs}
 \end{center}
 . The program will be shown in the VeriFast IDE. To verify the program,
 choose the \textbf{Verify program} command in the \textbf{Verify} menu,
@@ -148,25 +146,25 @@ press the \textbf{Play} toolbar button, or press F5. You will see
 something like Fig~\ref{figure:illegal-access1}.
 \begin{figure}
 \begin{center}
-\includegraphics[width=10cm]{illegal_access.png}
+\includegraphics[width=12cm]{illegal_access.png}
 \end{center}
-\caption{A screenshot of \texttt{illegal\_access.c} in the VeriFast IDE}\label{figure:illegal-access1}
+\caption{A screenshot of \texttt{illegal\_access.rs} in the VeriFast IDE}\label{figure:illegal-access1}
 \end{figure}
 The program attempts to access the field \lstinline|balance| of the struct
-instance \lstinline|myAccount| allocated using \lstinline|malloc|. However,
-if there is insufficient memory, \lstinline|malloc| returns zero and no
+instance \lstinline|my_account| allocated using \lstinline|alloc|. However,
+if there is insufficient memory, \lstinline|alloc| returns a null pointer and no
 memory is allocated. VeriFast detects the illegal memory access that
 happens in this case. Notice the following GUI elements:
 \begin{itemize}
 \item The erroneous program element is displayed in a red
     color with a double underline.
-\item The error message states: ``No matching heap chunks: $\mathsf{account\_balance\_(myAccount, \_)}$''. Indeed, in the scenario where there
+\item The error message states: ``No matching heap chunks: $\mathsf{Account\_balance\_(my\_account, \_)}$''. Indeed, in the scenario where there
     is insufficient memory, the memory location (or
     \emph{heap chunk}) that the program attempts to access
     is not accessible to the program.
-    $\mathsf{account\_balance\_}$ is the type of heap chunk
+    $\mathsf{Account\_balance\_}$ is the type of heap chunk
     that represents the (possibly uninitialized) $\mathsf{balance}$ field of the
-    instance of struct $\mathsf{account}$ pointed to by pointer $\mathsf{myAccount}$.
+    instance of struct $\mathsf{Account}$ pointed to by pointer $\mathsf{my\_account}$.
 \item The assignment statement is shown on a yellow
     background. This is because the assignment statement is
     the \emph{current step}. VeriFast verifies each
@@ -186,43 +184,44 @@ happens in this case. Notice the following GUI elements:
 To correct the error, uncomment the commented statement. Now
 press F5 again. We get a green bar: the program now verifies. This means VeriFast has symbolically executed all possible paths of execution through function \lstinline|main|, and found no errors.
 
-Let's take a closer look at how VeriFast symbolically executed this function. After VeriFast has symbolically executed a program, you can view the \emph{symbolic execution tree} for each function in the Trees pane. The Trees pane is hidden by default, but you can reveal it by dragging the right-hand border of the VeriFast window to the left. At the top of the Trees pane is a drop-down list of all functions that have been symbolically executed. Select the \textsf{Verifying function \lstinline|main|} item to view the symbolic execution tree for function \lstinline|main|.
+Let's take a closer look at how VeriFast symbolically executed this function. After VeriFast has symbolically executed a program, you can view the \emph{symbolic execution tree} for each function in the Trees pane. The Trees pane is hidden by default, but you can reveal it by dragging the right-hand border of the VeriFast window to the left. At the top of the Trees pane is a drop-down list of all functions that have been symbolically executed. Select the \textsf{Verifying function '\lstinline|main|'} item to view the symbolic execution tree for function \lstinline|main|.
 
 A symbolic execution tree has four kinds of nodes:
 \begin{itemize}
 \item The \emph{top node} represents the start of the symbolic execution. Click the top node: in the initial symbolic execution state, there are no heap chunks (the Heap chunks pane is empty), there are no local variables (the Locals pane is empty), and there are no assumptions (the Assumptions pane is empty).
-\item There is one \emph{fork node} at each point where a symbolic execution path forks into two paths. This happens when multiple cases need to be considered in the symbolic execution; it is therefore also called a \emph{case split}. The symbolic execution of function \lstinline|main| involves three case splits: the first case split is where symbolic execution of the \lstinline|malloc| call forks into one branch where no memory is available and therefore \lstinline|malloc| returns a null pointer, and another branch where memory is available and therefore \lstinline|malloc| allocates the requested amount of memory and returns a pointer to it. A case split also happens on each of these branches when symbolically executing the \lstinline|if| statement.
+\item There is one \emph{fork node} at each point where a symbolic execution path forks into two paths. This happens when multiple cases need to be considered in the symbolic execution; it is therefore also called a \emph{case split}. The symbolic execution of function \lstinline|main| involves three case splits: the first case split is where symbolic execution of the \lstinline|alloc| call forks into one branch where no memory is available and therefore \lstinline|alloc| returns a null pointer, and another branch where memory is available and therefore \lstinline|alloc| allocates the requested amount of memory and returns a pointer to it. A case split also happens on each of these branches when symbolically executing the \lstinline|if| statement.
 \item A black \emph{final node} is shown for the final symbolic execution state on each path where additional symbolic execution steps were performed after the last fork. This is the case for one of the branches of each of the two fork nodes corresponding to the \lstinline|if| statement.
 \item There is one green \emph{leaf node} at the end of each complete symbolic execution path through the function. Click the black node preceding any leaf node to see the full corresponding symbolic execution path in the Steps pane.
-Function \lstinline|main| has four symbolic execution paths: two paths end when the \lstinline|if| branch is detected to be inconsistent with the preceding \lstinline|malloc| branch; one path where no memory is available ends when the program ends due to the call of \lstinline|abort|; and a fourth path, where memory is available, ends when the function returns.
+Function \lstinline|main| has four symbolic execution paths: two paths end when the \lstinline|if| branch is detected to be inconsistent with the preceding \lstinline|alloc| branch; one path where no memory is available ends when the program ends due to the call of \lstinline|handle_alloc_error|; and a fourth path, where memory is available, ends when the function returns.
 \end{itemize}
 
-Click the black node preceding the rightmost leaf node to view the (feasible) execution path where \lstinline|malloc| successfully allocates memory. Notice that VeriFast shows arrows in the left margin next to the code of function \lstinline|main| to indicate that this path executes the second case of the \lstinline|malloc| statement and the second case of the \lstinline|if| statement.
+Click the black node preceding the rightmost leaf node to view the (feasible) execution path where \lstinline|alloc| successfully allocates memory. Notice that VeriFast shows arrows in the left margin next to the code of function \lstinline|main| to indicate that this path executes the second case of the \lstinline|alloc| statement and the second case of the \lstinline|if| statement.
 
-To better understand the details of VeriFast's symbolic execution, we will step through this path from the top. Select the first step in the Steps pane. Then, press the Down arrow key. The \textsf{Verifying function \lstinline|main|} step does not affect the symbolic state. The \textsf{Producing assertion} step adds the assumption \textsf{true} to the Assumptions. We will consider production and consumption of assertions in detail later in this tutorial. The first \textsf{Executing statement} step, indicating that we are starting the execution of the function body as a whole, also does nothing. We now arrive at the \textsf{Executing statement} step for the \lstinline|malloc| statement. This statement's effect takes place in the next step, the \textsf{Executing second branch} step; it affects the symbolic state in three ways:
+To better understand the details of VeriFast's symbolic execution, we will step through this path from the top. Select the first step in the Steps pane. Then, press the Down arrow key. The \textsf{Verifying function \lstinline|main|} step does not affect the symbolic state. The \textsf{Producing assertion} step adds the assumption \textsf{true} to the Assumptions. We will consider production and consumption of assertions in detail later in this tutorial. We now arrive at the \textsf{Executing statement} step for the \lstinline|alloc| statement. This statement's effect takes place in the next step, the \textsf{Executing second branch} step; it affects the symbolic state in three ways:
 \begin{itemize}
-\item It adds the heap chunks $\mathsf{account\_balance\_}(\mathsf{myAccount}, \mathsf{dummy})$ and $\mathsf{malloc\_block\_account}(\mathsf{myAccount})$ to the symbolic heap (as shown in the Heap chunks pane). Here, $\mathsf{myAccount}$ and $\mathsf{dummy}$ are \emph{symbols} that represent unknown values. Specifically, $\mathsf{myAccount}$ represents a pointer to the newly allocated struct instance, and $\mathsf{dummy}$ represents the initial state of the \lstinline|balance| field of the struct instance. (In C, the initial state of the fields of a newly allocated struct instance is unspecified, unlike in Java where the fields of a new object are initialized to the default value of their type. In fact, in C, uninitialized fields might be in a special \emph{poisoned} state whose behavior is different from any initialized state.\footnote{See \url{https://www.ralfj.de/blog/2019/07/14/uninit.html}. We here use the term \emph{poisoned} instead of \emph{uninitialized} to indicate ``a memory state that behaves differently from any initialized state'' because VeriFast allows for the possibility that memory that has not yet been initialized is in fact in a regular state that behaves just like an initialized state.} VeriFast considers reading from poisoned memory to be an error.)
+\item It adds the heap chunks $\mathsf{Account\_balance\_}(\mathsf{my\_account}, \mathsf{dummy})$ and $\mathsf{alloc\_block\_Account}(\mathsf{my\_account})$ to the symbolic heap (as shown in the Heap chunks pane). Here, $\mathsf{my\_account}$ and $\mathsf{dummy}$ are \emph{symbols} that represent unknown values. Specifically, $\mathsf{my\_account}$ represents a pointer to the newly allocated struct instance, and $\mathsf{dummy}$ represents the initial state of the \lstinline|balance| field of the struct instance. (The initial state of memory allocated using \lstinline|alloc| is unspecified, unlike in Java where the fields of a new object are initialized to the default value of their type. In fact, in Rust, uninitialized memory might be in a special \emph{poisoned} state whose behavior is different from any initialized state.\footnote{See \url{https://www.ralfj.de/blog/2019/07/14/uninit.html}. We here use the term \emph{poisoned} instead of \emph{uninitialized} to indicate ``a memory state that behaves differently from any initialized state'' because VeriFast allows for the possibility that memory that has not yet been initialized is in fact in a regular state that behaves just like an initialized state.} VeriFast considers reading from poisoned memory to be an error.)
 
 VeriFast \emph{freshly picks} these symbols during this symbolic execution step. That is, to represent the location in memory of the new struct instance and the initial state of the \lstinline|balance| field, VeriFast uses symbols that are not yet being used on this symbolic execution path. To see this, try verifying the function \lstinline|test| shown below:
 \begin{lstlisting}
-void test()
-    //@ requires true;
-    //@ ensures true;
+unsafe fn test()
+//@ req true;
+//@ ens true;
 {
-    {
-        struct account *myAccount = malloc(sizeof(struct account));
-        if (myAccount == 0) { abort(); }
+    let my_account = alloc(Layout::new::<Account>()) as *mut Account;
+    if my_account.is_null() {
+        handle_alloc_error(Layout::new::<Account>());
     }
-    {
-        struct account *myAccount = malloc(sizeof(struct account));
-        if (myAccount == 0) { abort(); }
+    let your_account = alloc(Layout::new::<Account>()) as *mut Account;
+    if your_account.is_null() {
+        handle_alloc_error(Layout::new::<Account>());
     }
 }
-\end{lstlisting}
-Notice that to symbolically execute the first \lstinline|malloc| statement, VeriFast picked symbols $\mathsf{myAccount}$ and $\mathsf{dummy}$, and to symbolically execute the second \lstinline|malloc| statement, VeriFast picked symbols $\mathsf{myAccount0}$ and $\mathsf{dummy0}$.
 
-\item It adds the assumption $\mathsf{myAccount} \neq 0$ (perhaps written differently) to the path condition (as shown in the Assumptions pane). Indeed, if \lstinline|malloc| succeeds, the returned pointer is not a null pointer.
-\item It adds a binding to the symbolic store (shown in the Locals pane) that binds local variable \lstinline|myAccount| to symbolic value $\mathsf{myAccount}$. Indeed, the program assigns the result of the \lstinline|malloc| call (represented by the symbol $\mathsf{myAccount}$) to the local variable \lstinline|myAccount|. Note that the fact that in this case the local variable and the symbol have the same name is incidental and has no special significance.
+\end{lstlisting}
+Notice that to symbolically execute the first \lstinline|alloc| statement, VeriFast picked symbols $\mathsf{my\_account}$ and $\mathsf{dummy}$, and to symbolically execute the second \lstinline|alloc| statement, VeriFast picked symbols $\mathsf{your\_account}$ and $\mathsf{dummy0}$.
+
+\item It adds the assumption $\mathsf{get\_pointer\_address}(\mathsf{my\_account}) \neq 0$ (perhaps written differently) to the path condition (as shown in the Assumptions pane). Indeed, if \lstinline|alloc| succeeds, the returned pointer is not a null pointer.
+\item It adds a binding to the symbolic store (shown in the Locals pane) that binds local variable \lstinline|my_account| to symbolic value $\mathsf{my\_account}$. Indeed, the program assigns the result of the \lstinline|alloc| call (represented by the symbol $\mathsf{my\_account}$) to the local variable \lstinline|my_account|. Note that the fact that in this case the local variable and the symbol have the same name is incidental and has no special significance.
 \end{itemize}
 
 \begin{figure}
