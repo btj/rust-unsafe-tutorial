@@ -1065,27 +1065,28 @@ helper function. The contract need not specify the return value
 \section{Loops}\label{section:loops}
 
 In Exercise~\ref{exercise:dispose}, we implemented
-\lstinline!stack_dispose! using a recursive function. However,
+\lstinline!Stack::dispose! using a recursive function. However,
 this is not an optimal implementation. If our data structure
 contains very many elements, we may create too many activation
 records and overflow the call stack. It is more optimal to
-implement the function using a loop. Here's a first attempt:
+implement the function using a loop. Here's a first attempt:\footnote{A \lstinline|while| loop would perhaps be more natural here. Unfortunately, however, VeriFast for Rust supports only \lstinline|loop| loops for now.}
 \begin{lstlisting}
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, _);
-    //@ ensures true;
+unsafe fn dispose(stack: *mut Stack)
+//@ req Stack(stack, _);
+//@ ens true;
 {
-    //@ open stack(stack, _);
-    struct node *n = stack->head;
-    while (n != 0)
-    {
-        //@ open nodes(n, _);
-        struct node *next = n->next;
-        free(n);
+    //@ open Stack(stack, _);
+    let mut n = (*stack).head;
+    loop {
+        //@ open Nodes(n, _);
+        if n.is_null() {
+            break;
+        }
+        let next = (*n).next;
+        dealloc(n as *mut u8, Layout::new::<Node>());
         n = next;
     }
-    //@ open nodes(0, _);
-    free(stack);
+    dealloc(stack as *mut u8, Layout::new::<Stack>());
 }
 \end{lstlisting}
 This function does not verify. VeriFast complains at the loop
@@ -1103,21 +1104,11 @@ Specifically, VeriFast verifies a loop as follows:
 \item Then, it assigns a fresh logical symbol to each local
     variable that is modified in the loop body.
 \item Then, it produces the loop invariant.
-\item Then, it performs a case split on the loop condition:
-    \begin{itemize}
-    \item If the condition is true:
-    \begin{itemize}
-    \item It verifies the loop body,
-    \item then it consumes the loop invariant,
-    \item and then finally it checks for leaks.
+\item Then, it verifies the loop body. If, during verification of the loop body, an execution path \lstinline|break|s out of the loop, at that point the heap chunks that were removed from the symbolic heap when the loop was entered are added back and symbolic execution continues after the loop.
+\item Then, it consumes the loop invariant.
+\item And then finally it checks for leaks.
         After this step this execution path is
         finished.
-    \end{itemize}
-    \item If the condition is false, VeriFast puts the
-        heap chunks that were removed in Step 2 back
-        into the heap, and then verification continues
-        after the loop.
-    \end{itemize}
 \end{itemize}
 Notice that this means that the loop can access only those heap
 chunks that are mentioned in the loop invariant.
@@ -1125,49 +1116,40 @@ chunks that are mentioned in the loop invariant.
 The correct loop invariant for the above function is as
 follows:
 \begin{lstlisting}
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, _);
-    //@ ensures true;
+unsafe fn dispose(stack: *mut Stack)
+//@ req Stack(stack, _);
+//@ ens true;
 {
-    //@ open stack(stack, _);
-    struct node *n = stack->head;
-    while (n != 0)
-        //@ invariant nodes(n, _);
-    {
-        //@ open nodes(n, _);
-        struct node *next = n->next;
-        free(n);
+    //@ open Stack(stack, _);
+    let mut n = (*stack).head;
+    loop {
+        //@ inv Nodes(n, _);
+        //@ open Nodes(n, _);
+        if n.is_null() {
+            break;
+        }
+        let next = (*n).next;
+        dealloc(n as *mut u8, Layout::new::<Node>());
         n = next;
     }
-    //@ open nodes(0, _);
-    free(stack);
+    dealloc(stack as *mut u8, Layout::new::<Stack>());
 }
 \end{lstlisting}
 
-You can inspect the first branch of the execution of the loop
-by placing the cursor at the closing brace of the loop body and
-choosing the \textbf{Run to cursor} command. Find the
-\textit{Executing statement} step for the \lstinline!while!
-statement. Notice that this step is followed by a
-\textit{Producing assertion} step and a \textit{Consuming
-assertion} step. Notice that between these two steps, the value
-of variable \lstinline!n! changes from \lstinline!head! to
+You can inspect the execution of the loop
+by commenting out the first \lstinline|dealloc| statement. This will cause
+the leak check at the end of the symbolic execution of the loop to fail. Find the
+step where the loop invariant is consumed for the first time.
+Notice that after this step, the value
+of variable \lstinline!n! changes from \lstinline!head0! to
 \lstinline!n!, and all chunks are removed from the symbolic
-heap. Further notice that in the next step, the assumption
-\lstinline!(not (= n 0))! is added to the Assumptions pane.
-
-You can inspect the second branch of the execution of the loop
-by placing the cursor at the closing brace of the function body
-and choosing the \textbf{Run to cursor} command. Notice that
-the same things happen as in the first branch, except that the
-loop body is not executed, and the assumption %
-\lstinline!(= n 0)! is added to the Assumptions pane.
+heap.
 
 \begin{exercise}\label{exercise:popn}
-Specify and implement function \lstinline!stack_popn!, which
-pops a given number of elements from the stack (and returns
-\lstinline!void!). You may call \lstinline!stack_pop!
-internally. Use a \lstinline!while! loop. Notice that your loop
+Specify and implement function \lstinline!Stack::popn!, which
+pops a given number of elements from the stack (and does not
+return a result). You may call \lstinline!Stack::pop!
+internally. Use a \lstinline!loop! loop. Notice that your loop
 invariant must not only enable verification of the loop body,
 but must also maintain the relationship between the current
 state and the initial state, sufficiently to prove the
@@ -4992,7 +4974,7 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:sum}: sum.c}\label{solution:sum}
+\ref{exercise:sum}: sum.rs}\label{solution:sum}
 
 \begin{lstlisting}
 unsafe fn get_nodes_sum(nodes: *mut Node) -> i32
@@ -5025,19 +5007,21 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:popn}: popn.c}\label{solution:popn}
+\ref{exercise:popn}: popn.rs}\label{solution:popn}
 
 \begin{lstlisting}
-void stack_popn(struct stack *stack, int n)
-    //@ requires stack(stack, ?count) &*& 0 <= n &*& n <= count;
-    //@ ensures stack(stack, count - n);
+unsafe fn popn(stack: *mut Stack, n: i32)
+//@ req Stack(stack, ?count) &*& 0 <= n &*& n <= count;
+//@ ens Stack(stack, count - n);
 {
-    int i = 0;
-    while (i < n)
-        //@ invariant stack(stack, count - i) &*& i <= n;
-    {
-        stack_pop(stack);
-        i++;
+    let mut i = 0;
+    loop {
+        //@ inv Stack(stack, count - i) &*& i <= n;
+        if i == n {
+            break;
+        }
+        Stack::pop(stack);
+        i += 1;
     }
 }
 \end{lstlisting}
