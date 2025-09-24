@@ -944,16 +944,16 @@ themselves.
 
 \begin{exercise}\label{exercise:stack}
 Implement a stack of integers using a singly linked list data
-structure: implement functions \lstinline!create_stack!,
-\lstinline!stack_push!, \lstinline!stack_pop!, and
-\lstinline!stack_dispose!. In order to be able to specify the
-precondition of \lstinline!stack_pop!, your predicate will need
+structure: implement \lstinline|Stack| associated functions \lstinline!create!,
+\lstinline!push!, \lstinline!pop!, and
+\lstinline!dispose!. In order to be able to specify the
+precondition of \lstinline!pop!, your predicate will need
 to have a parameter that specifies the number of elements in
-the stack. Function \lstinline!stack_dispose! may be called
+the stack. Function \lstinline!dispose! may be called
 only on an empty stack. Do not attempt to specify the contents
 of the stack; this is not possible with the annotation elements
 we have seen. You will need to use conditional assertions:
-\lstinline!condition ? assertion1 : assertion2!. Note: VeriFast
+\lstinline!if condition { assertion1 } else { assertion2 }!. Note: VeriFast
 does not allow the use of field dereferences in
 \lstinline!open! statements. If you want to use the value of a
 field in an \lstinline!open! statement, you must first store
@@ -961,47 +961,49 @@ the value in a local variable. Verify the following main
 function:
 \end{exercise}
 \begin{lstlisting}
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_pop(s);
-    stack_pop(s);
-    stack_dispose(s);
-    return 0;
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        Stack::pop(s);
+        Stack::pop(s);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
 Now, let's extend the solution to Exercise~\ref{exercise:stack}
 on page~\pageref{solution:stack} with a
-\lstinline!stack_is_empty! function. Recall the predicate
+\lstinline!Stack::is_empty! function. Recall the predicate
 definitions:
 \begin{lstlisting}
-predicate nodes(struct node *node, int count) =
-    node == 0 ?
+pred Nodes(node: *mut Node, count: i32) =
+    if node == 0 {
         count == 0
-    :
-        0 < count
-        &*& node->next |-> ?next &*& node->value |-> ?value
-        &*& malloc_block_node(node) &*& nodes(next, count - 1);
+    } else {
+        0 < count &*&
+        (*node).next |-> ?next &*& (*node).value |-> ?value &*&
+        alloc_block_Node(node) &*& Nodes(next, count - 1)
+    };
 
-predicate stack(struct stack *stack, int count) =
-    stack->head |-> ?head &*& malloc_block_stack(stack) &*& 0 <= count &*& nodes(head, count);
+pred Stack(stack: *mut Stack, count: i32) =
+    (*stack).head |-> ?head &*& alloc_block_Stack(stack) &*& 0 <= count &*& Nodes(head, count);
 \end{lstlisting}
 
-Here's a first stab at a \lstinline!stack_is_empty! function:
+Here's a first stab at a \lstinline!Stack::is_empty! function:
 \begin{lstlisting}
-bool stack_is_empty(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count) &*& result == (count == 0);
+unsafe fn is_empty(stack: *mut Stack) -> bool
+//@ req Stack(stack, ?count);
+//@ ens Stack(stack, count) &*& result == (count == 0);
 {
-    //@ open stack(stack, count);
-    bool result = stack->head == 0;
-    //@ close stack(stack, count);
-    return result;
+    //@ open Stack(stack, count);
+    let result = (*stack).head.is_null();
+    //@ close Stack(stack, count);
+    result
 }
 \end{lstlisting}
 The function does not verify. VeriFast complains that it cannot
@@ -1010,40 +1012,40 @@ postcondition. Indeed, if we look at the assumptions in the
 Assumptions pane, they are insufficient to prove this
 condition. The problem is that the relationship between the
 value of the head pointer and the number of nodes is hidden
-inside the \lstinline!nodes! predicate. We need to open the
+inside the \lstinline!Nodes! predicate. We need to open the
 predicate, so that the information is added to the assumptions.
 Of course, we then need to close it again so that we can close
-the \lstinline!stack! predicate.
+the \lstinline!Stack! predicate.
 \begin{lstlisting}
-bool stack_is_empty(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count) &*& result == (count == 0);
+unsafe fn is_empty(stack: *mut Stack) -> bool
+//@ req Stack(stack, ?count);
+//@ ens Stack(stack, count) &*& result == (count == 0);
 {
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    //@ open nodes(head, count);
-    bool result = stack->head == 0;
-    //@ close nodes(head, count);
-    //@ close stack(stack, count);
-    return result;
+    //@ open Stack(stack, count);
+    let head = (*stack).head;
+    //@ open Nodes(head, count);
+    let result = head.is_null();
+    //@ close Nodes(head, count);
+    //@ close Stack(stack, count);
+    result
 }
 \end{lstlisting}
 The function now verifies. What happens exactly is the
 following. When VeriFast executes the open statement, it
 produces the conditional assertion in the body of the
-\lstinline!nodes! predicate. This causes it to perform a
+\lstinline!Nodes! predicate. This causes it to perform a
 \emph{case split}. This means that the rest of the function is
 verified twice: once under the assumption that the condition is
 true, and once under the assumption that the condition is
 false. In other words, the execution path splits into two
 execution paths, or two \emph{branches}. On both branches, the
 postcondition can now be proved easily: on the first branch, we
-get the assumptions \lstinline!head == 0! and %
-\lstinline!count == 0!, and on the second branch we get
-\lstinline$head != 0$ and \lstinline$0 < count$.
+get the assumptions $\mathsf{head} = \mathsf{null\_pointer}$ and %
+$\mathsf{count} = 0$, and on the second branch we get
+$\mathsf{head} \neq \mathsf{null\_pointer}$ and $0 < \mathsf{count}$.
 
 \begin{exercise}\label{exercise:dispose}
-Modify function \lstinline!stack_dispose! so that it works even
+Modify function \lstinline!Stack::dispose! so that it works even
 if the stack still contains some elements. Use a recursive
 helper function.\footnote{Warning: VeriFast does not verify
 termination; it does not complain about infinite recursion or
@@ -1054,7 +1056,7 @@ Notice that VeriFast performs a case split when verifying an
 \lstinline!if! statement.
 
 \begin{exercise}\label{exercise:sum}
-Add a function \lstinline!stack_get_sum! that returns the sum
+Add a function \lstinline!Stack::get_sum! that returns the sum
 of the values of the elements on the stack. Use a recursive
 helper function. The contract need not specify the return value
 (since we did not see how to do that yet).
@@ -4851,120 +4853,141 @@ fn main()
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:stack}: stack.c}\label{solution:stack}
+\ref{exercise:stack}: stack.rs}\label{solution:stack}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
+//@ use std::alloc::{Layout, alloc_block};
 
-struct node {
-    struct node *next;
-    int value;
-};
+struct Node {
+    next: *mut Node,
+    value: i32,
+}
 
-struct stack {
-    struct node *head;
-};
+struct Stack {
+    head: *mut Node,
+}
 
 /*@
 
-predicate nodes(struct node *node, int count) =
-    node == 0 ?
+pred Nodes(node: *mut Node, count: i32) =
+    if node == 0 {
         count == 0
-    :
-        0 < count
-        &*& node->next |-> ?next &*& node->value |-> ?value
-        &*& malloc_block_node(node) &*& nodes(next, count - 1);
+    } else {
+        0 < count &*&
+        (*node).next |-> ?next &*&
+        (*node).value |-> ?value &*&
+        alloc_block_Node(node) &*&
+        Nodes(next, count - 1)
+    };
 
-predicate stack(struct stack *stack, int count) =
-    stack->head |-> ?head &*& malloc_block_stack(stack) &*& 0 <= count &*& nodes(head, count);
+pred Stack(stack: *mut Stack, count: i32) =
+    (*stack).head |-> ?head &*&
+    alloc_block_Stack(stack) &*&
+    0 <= count &*&
+    Nodes(head, count);
 
 @*/
 
-struct stack *create_stack()
-    //@ requires true;
-    //@ ensures stack(result, 0);
-{
-    struct stack *stack = malloc(sizeof(struct stack));
-    if (stack == 0) { abort(); }
-    stack->head = 0;
-    //@ close nodes(0, 0);
-    //@ close stack(stack, 0);
-    return stack;
+impl Stack {
+
+    unsafe fn create() -> *mut Stack
+    //@ req true;
+    //@ ens Stack(result, 0);
+    {
+        let stack = alloc(Layout::new::<Stack>()) as *mut Stack;
+        if stack.is_null() {
+            handle_alloc_error(Layout::new::<Stack>());
+        }
+        (*stack).head = std::ptr::null_mut();
+        //@ close Nodes(0, 0);
+        //@ close Stack(stack, 0);
+        stack
+    }
+
+    unsafe fn push(stack: *mut Stack, value: i32)
+    //@ req Stack(stack, ?count);
+    //@ ens Stack(stack, count + 1);
+    {
+        //@ open Stack(stack, count);
+        let n = alloc(Layout::new::<Node>()) as *mut Node;
+        if n.is_null() {
+            handle_alloc_error(Layout::new::<Node>());
+        }
+        (*n).next = (*stack).head;
+        (*n).value = value;
+        (*stack).head = n;
+        //@ close Nodes(n, count + 1);
+        //@ close Stack(stack, count + 1);
+    }
+
+    unsafe fn pop(stack: *mut Stack) -> i32
+    //@ req Stack(stack, ?count) &*& 0 < count;
+    //@ ens Stack(stack, count - 1);
+    {
+        //@ open Stack(stack, count);
+        let head = (*stack).head;
+        //@ open Nodes(head, count);
+        let result = (*head).value;
+        (*stack).head = (*head).next;
+        dealloc(head as *mut u8, Layout::new::<Node>());
+        //@ close Stack(stack, count - 1);
+        result
+    }
+
+    unsafe fn dispose(stack: *mut Stack)
+    //@ req Stack(stack, 0);
+    //@ ens true;
+    {
+        //@ open Stack(stack, 0);
+        //@ open Nodes(_, _);
+        dealloc(stack as *mut u8, Layout::new::<Stack>());
+    }
+
 }
 
-void stack_push(struct stack *stack, int value)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count + 1);
+fn main()
+//@ req true;
+//@ ens true;
 {
-    //@ open stack(stack, count);
-    struct node *n = malloc(sizeof(struct node));
-    if (n == 0) { abort(); }
-    n->next = stack->head;
-    n->value = value;
-    stack->head = n;
-    //@ close nodes(n, count + 1);
-    //@ close stack(stack, count + 1);
-}
-
-int stack_pop(struct stack *stack)
-    //@ requires stack(stack, ?count) &*& 0 < count;
-    //@ ensures stack(stack, count - 1);
-{
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    //@ open nodes(head, count);
-    int result = head->value;
-    stack->head = head->next;
-    free(head);
-    //@ close stack(stack, count - 1);
-    return result;
-}
-
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, 0);
-    //@ ensures true;
-{
-    //@ open stack(stack, 0);
-    //@ open nodes(_, _);
-    free(stack);
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_pop(s);
-    stack_pop(s);
-    stack_dispose(s);
-    return 0;
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        Stack::pop(s);
+        Stack::pop(s);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:dispose}: dispose.c}\label{solution:dispose}
+\ref{exercise:dispose}: dispose.rs}\label{solution:dispose}
 
 \begin{lstlisting}
-void nodes_dispose(struct node *n)
-    //@ requires nodes(n, _);
-    //@ ensures true;
+unsafe fn dispose_nodes(n: *mut Node)
+//@ req Nodes(n, _);
+//@ ens true;
 {
-    //@ open nodes(n, _);
-    if (n != 0) {
-        nodes_dispose(n->next);
-        free(n);
+    //@ open Nodes(n, _);
+    if !n.is_null() {
+        dispose_nodes((*n).next);
+        dealloc(n as *mut u8, Layout::new::<Node>());
     }
 }
 
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, _);
-    //@ ensures true;
-{
-    //@ open stack(stack, _);
-    nodes_dispose(stack->head);
-    free(stack);
+impl Stack {
+
+    unsafe fn dispose(stack: *mut Stack)
+    //@ req Stack(stack, _);
+    //@ ens true;
+    {
+        //@ open Stack(stack, _);
+        dispose_nodes((*stack).head);
+        dealloc(stack as *mut u8, Layout::new::<Stack>());
+    }
+
 }
 \end{lstlisting}
 
@@ -4972,28 +4995,32 @@ void stack_dispose(struct stack *stack)
 \ref{exercise:sum}: sum.c}\label{solution:sum}
 
 \begin{lstlisting}
-int nodes_get_sum(struct node *nodes)
-    //@ requires nodes(nodes, ?count);
-    //@ ensures nodes(nodes, count);
+unsafe fn get_nodes_sum(nodes: *mut Node) -> i32
+//@ req Nodes(nodes, ?count);
+//@ ens Nodes(nodes, count);
 {
-    int result = 0;
-    //@ open nodes(nodes, count);
-    if (nodes != 0) {
-        result = nodes_get_sum(nodes->next);
-        result += nodes->value;
+    let mut result = 0;
+    //@ open Nodes(nodes, count);
+    if !nodes.is_null() {
+        result = get_nodes_sum((*nodes).next);
+        result += (*nodes).value;
     }
-    //@ close nodes(nodes, count);
-    return result;
+    //@ close Nodes(nodes, count);
+    result
 }
 
-int stack_get_sum(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count);
-{
-    //@ open stack(stack, count);
-    int result = nodes_get_sum(stack->head);
-    //@ close stack(stack, count);
-    return result;
+impl Stack {
+
+    unsafe fn get_sum(stack: *mut Stack) -> i32
+    //@ req Stack(stack, ?count);
+    //@ ens Stack(stack, count);
+    {
+        //@ open Stack(stack, count);
+        let result = get_nodes_sum((*stack).head);
+        //@ close Stack(stack, count);
+        result
+    }
+
 }
 \end{lstlisting}
 
