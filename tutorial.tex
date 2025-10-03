@@ -1306,25 +1306,27 @@ the present section.}
 
 Let's return to our initial annotated stack implementation (the
 solution to Exercise~\ref{exercise:stack}). Let's add a
-\lstinline!stack_get_count! function that returns the number of
+\lstinline!Stack::get_count! function that returns the number of
 elements in the stack, implemented using a loop:
 \begin{lstlisting}
-int stack_get_count(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count) &*& result == count;
+unsafe fn get_count(stack: *mut Stack) -> i32
+//@ req Stack(stack, ?count);
+//@ ens Stack(stack, count) &*& result == count;
 {
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    struct node *n = head;
-    int i = 0;
-    while (n != 0)
-        //@ invariant true;
-    {
-        n = n->next;
-        i++;
+    //@ open Stack(stack, count);
+    let head = (*stack).head;
+    let mut n = head;
+    let mut i = 0;
+    loop {
+        //@ inv true;
+        if n.is_null() {
+            break;
+        }
+        n = (*n).next;
+        i += 1;
     }
-    //@ close stack(stack, count);
-    return i;
+    //@ close Stack(stack, count);
+    i
 }
 \end{lstlisting}
 Clearly, the loop invariant \lstinline!true! will not do. What
@@ -1335,17 +1337,18 @@ segments} for short). We state in the loop invariant that there
 is a list segment from \lstinline!head! to \lstinline!n! and a
 separate list segment from \lstinline!n! to 0:
 \begin{lstlisting}
-//@ invariant lseg(head, n, i) &*& lseg(n, 0, count - i);
+//@ inv lseg(head, n, i) &*& lseg(n, 0, count - i);
 \end{lstlisting}
 We can define the \lstinline!lseg! predicate as follows:
 \begin{lstlisting}
-predicate lseg(struct node *first, struct node *last, int count) =
-    first == last ?
+pred lseg(first: *mut Node, last: *mut Node, count: i32) =
+    if first == last {
         count == 0
-    :
+    } else {
         0 < count &*& first != 0 &*&
-        first->value |-> ?value &*& first->next |-> ?next &*& malloc_block_node(first) &*&
-        lseg(next, last, count - 1);
+        (*first).value |-> ?value &*& (*first).next |-> ?next &*& alloc_block_Node(first) &*&
+        lseg(next, last, count - 1)
+    };
 \end{lstlisting}
 We are not done yet. We need to establish the loop invariant
 when first entering the loop. That is, we need to establish
@@ -1354,17 +1357,17 @@ lseg(head, head, 0) &*& lseg(head, 0, count)
 \end{lstlisting}
 The first conjunct is easy: it is empty, so we can just close
 it. The second conjunct requires that we rewrite the
-\lstinline!nodes(head, count)! chunk into an equivalent
+\lstinline!Nodes(head, count)! chunk into an equivalent
 \lstinline!lseg(head, 0, count)! chunk. Notice that we cannot
 do so using a statically bounded number of open and close
 operations. We need to use either a loop or a recursive
 function. Since VeriFast does not allow loops inside
 annotations, we will use a recursive function. We will not use
-a regular C function, since the function has no purpose at run
+a regular Rust function, since the function has no purpose at run
 time; furthermore, we cannot use a fixpoint function, since the
 latter cannot include open or close statements. VeriFast
 supports a third kind of function, called \emph{lemma
-functions}. They are just like regular C functions, except that
+functions}. They are just like regular Rust functions, except that
 they may not perform field assignments or call regular
 functions, and they must always terminate. It follows that
 calling them has no effect at run time. Their only purpose is
@@ -1379,74 +1382,76 @@ only direct recursion and by checking each recursive call as
 follows: first, if, after consuming the precondition of the
 recursive call, a field chunk is left in the symbolic heap,
 then the call is allowed. This is induction on heap size.
-Otherwise, if the body of the lemma function is a switch
+Otherwise, if the body of the lemma function is a match
 statement on a parameter whose type is an inductive datatype,
 then the argument for this parameter in the recursive call must
 be a constructor argument of the caller's argument for the same
 parameter. This is induction on an inductive parameter.
-Finally, if the body of the lemma function is not such a switch
+Finally, if the body of the lemma function is not such a match
 statement, then the first heap chunk consumed by the
 precondition of the callee must have been obtained from the
 first heap chunk consumed by the precondition of the caller
 through one or more open operations. This is induction on the
 derivation of the first conjunct of the precondition.
 
-We can transform a \lstinline!nodes! chunk into an
+We can transform a \lstinline!Nodes! chunk into an
 \lstinline!lseg! chunk using the following lemma function:
 \begin{lstlisting}
-lemma void nodes_to_lseg_lemma(struct node *first)
-    requires nodes(first, ?count);
-    ensures lseg(first, 0, count);
+lem Nodes_to_lseg_lemma(first: *mut Node)
+    req Nodes(first, ?count);
+    ens lseg(first, 0, count);
 {
-    open nodes(first, count);
-    if (first != 0) {
-        nodes_to_lseg_lemma(first->next);
+    open Nodes(first, count);
+    if first != 0 {
+        Nodes_to_lseg_lemma((*first).next);
     }
     close lseg(first, 0, count);
 }
 \end{lstlisting}
-Notice that this lemma is admitted since it performs induction
+Notice that this lemma is accepted since it performs induction
 on heap size.
 
 \begin{exercise}\label{exercise:lemma}
 We will need the inverse operation as well. Write a lemma
-function \lstinline!lseg_to_nodes_lemma! that takes an
-\lstinline!lseg! chunk that ends in 0 and transforms it into a
-\lstinline!nodes! chunk.
+function \lstinline!lseg_to_Nodes_lemma! that takes an
+\lstinline!lseg! chunk that ends in a null pointer and transforms it into a
+\lstinline!Nodes! chunk.
 \end{exercise}
 
-The \lstinline!stack_get_count! function now looks as follows:
+The \lstinline!Stack::get_count! function now looks as follows:
 \begin{lstlisting}
-int stack_get_count(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count) &*& result == count;
+unsafe fn get_count(stack: *mut Stack) -> i32
+//@ req Stack(stack, ?count);
+//@ ens Stack(stack, count) &*& result == count;
 {
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    //@ nodes_to_lseg_lemma(head);
-    struct node *n = head;
-    int i = 0;
+    //@ open Stack(stack, count);
+    let head = (*stack).head;
+    //@ Nodes_to_lseg_lemma(head);
+    let mut n = head;
+    let mut i = 0;
     //@ close lseg(head, head, 0);
-    while (n != 0)
-        //@ invariant lseg(head, n, i) &*& lseg(n, 0, count - i);
-    {
+    loop {
+        //@ inv lseg(head, n, i) &*& lseg(n, 0, count - i);
+        if n.is_null() {
+            break;
+        }
         //@ open lseg(n, 0, count - i);
-        n = n->next;
-        i++;
+        n = (*n).next;
+        i += 1;
         // Error!
     }
     //@ open lseg(0, 0, _);
-    //@ lseg_to_nodes_lemma(head);
-    //@ close stack(stack, count);
-    return i;
+    //@ lseg_to_Nodes_lemma(head);
+    //@ close Stack(stack, count);
+    i
 }
 \end{lstlisting}
 We are almost done. All that is left to do is to fix the error
 that we get at the end of the loop body. At that point, we have
 the following chunks:
 \begin{lstlisting}
-lseg(head, ?old_n, i - 1) &*& old_n->value |-> ?value &*& old_n->next |-> n &*&
-malloc_block_node(old_n) &*& lseg(n, 0, count - i)
+lseg(head, ?old_n, i - 1) &*& (*old_n).value |-> ?value &*& (*old_n).next |-> n &*&
+alloc_block_Node(old_n) &*& lseg(n, 0, count - i)
 \end{lstlisting}
 We need to transform these into the following:
 \begin{lstlisting}
@@ -1457,17 +1462,17 @@ That is, we need to append the node at the old value of
 \lstinline!head!. We will again need to use a lemma function
 for this. Here's a first attempt:
 \begin{lstlisting}
-lemma void lseg_add_lemma(struct node *first)
-    requires
-        lseg(first, ?last, ?count) &*& last != 0 &*& last->value |-> ?value &*&
-        last->next |-> ?next &*& malloc_block_node(last);
-    ensures lseg(first, next, count + 1);
+lem lseg_add_lemma(first: *mut Node)
+    req
+        lseg(first, ?last, ?count) &*& last != 0 &*& (*last).value |-> ?value &*&
+        (*last).next |-> ?next &*& alloc_block_Node(last);
+    ens lseg(first, next, count + 1);
 {
     open lseg(first, last, count);
-    if (first == last) {
+    if first == last {
         close lseg(next, next, 0);
     } else {
-        lseg_add_lemma(first->next);
+        lseg_add_lemma((*first).next);
     }
     close lseg(first, next, count + 1);
 }
@@ -1491,20 +1496,19 @@ the symbolic heap, it adds an assumption stating that the field
 chunks belong to distinct struct instances.
 
 We obtain the following \lstinline!lseg_add_lemma! and
-\lstinline!stack_get_count! functions:
+\lstinline!Stack::get_count! functions:
 \begin{lstlisting}
 /*@
-lemma void lseg_add_lemma(struct node *first)
-    requires
-        lseg(first, ?last, ?count) &*& last != 0 &*& last->value |-> ?value &*&
-        last->next |-> ?next &*& malloc_block_node(last) &*& lseg(next, 0, ?count0);
-    ensures lseg(first, next, count + 1) &*& lseg(next, 0, count0);
+lem lseg_add_lemma(first: *mut Node)
+    req lseg(first, ?last, ?count) &*& last != 0 &*& (*last).value |-> ?last_value &*&
+        (*last).next |-> ?next &*& alloc_block_Node(last) &*& lseg(next, 0, ?count0);
+    ens lseg(first, next, count + 1) &*& lseg(next, 0, count0);
 {
     open lseg(first, last, count);
-    if (first == last) {
+    if first == last {
         close lseg(next, next, 0);
     } else {
-        lseg_add_lemma(first->next);
+        lseg_add_lemma((*first).next);
     }
     open lseg(next, 0, count0);
     close lseg(next, 0, count0);
@@ -1512,28 +1516,32 @@ lemma void lseg_add_lemma(struct node *first)
 }
 @*/
 
-int stack_get_count(struct stack *stack)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count) &*& result == count;
-{
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    //@ nodes_to_lseg_lemma(head);
-    struct node *n = head;
-    int i = 0;
-    //@ close lseg(head, head, 0);
-    while (n != 0)
-        //@ invariant lseg(head, n, i) &*& lseg(n, 0, count - i);
+impl Stack {
+    unsafe fn get_count(stack: *mut Stack) -> i32
+    //@ req Stack(stack, ?count);
+    //@ ens Stack(stack, count) &*& result == count;
     {
-        //@ open lseg(n, 0, count - i);
-        n = n->next;
-        i++;
-        //@ lseg_add_lemma(head);
+        //@ open Stack(stack, count);
+        let head = (*stack).head;
+        //@ Nodes_to_lseg_lemma(head);
+        let mut n = head;
+        let mut i = 0;
+        //@ close lseg(head, head, 0);
+        loop {
+            //@ inv lseg(head, n, i) &*& lseg(n, 0, count - i);
+            if n.is_null() {
+                break;
+            }
+            //@ open lseg(n, 0, count - i);
+            n = (*n).next;
+            i += 1;
+            //@ lseg_add_lemma(head);
+        }
+        //@ open lseg(0, 0, _);
+        //@ lseg_to_Nodes_lemma(head);
+        //@ close Stack(stack, count);
+        i
     }
-    //@ open lseg(0, 0, _);
-    //@ lseg_to_nodes_lemma(head);
-    //@ close stack(stack, count);
-    return i;
 }
 \end{lstlisting}
 These now verify.
@@ -1542,27 +1550,29 @@ These now verify.
 Verify the following function. You'll need an extra lemma.
 \end{exercise}
 \begin{lstlisting}
-void stack_push_all(struct stack *stack, struct stack *other)
-    //@ requires stack(stack, ?count) &*& stack(other, ?count0);
-    //@ ensures stack(stack, count0 + count);
+unsafe fn push_all(stack: *mut Stack, other: *mut Stack)
+//@ req Stack(stack, ?count) &*& Stack(other, ?count0);
+//@ ens Stack(stack, count0 + count);
 {
-    struct node *head0 = other->head;
-    free(other);
-    struct node *n = head0;
-    if (n != 0) {
-        while (n->next != 0)
-        {
-            n = n->next;
+    let head0 = (*other).head;
+    dealloc(other as *mut u8, Layout::new::<Stack>());
+    let mut n = head0;
+    if !n.is_null() {
+        loop {
+            if (*n).next.is_null() {
+                break;
+            }
+            n = (*n).next;
         }
-        n->next = stack->head;
-        stack->head = head0;
+        (*n).next = (*stack).head;
+        (*stack).head = head0;
     }
 }
 \end{lstlisting}
 
 \begin{exercise}\label{exercise:reverse}
 Implement, specify, and verify a function
-\lstinline!stack_reverse! that performs in-place reversal of a
+\lstinline!Stack::reverse! that performs in-place reversal of a
 stack, i.e., without any memory allocation. Verify full
 functional correctness (see Section~\ref{section:datatypes}).
 You'll need to define additional fixpoints and lemmas.
@@ -5171,151 +5181,159 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:lemma}: lemma.c}\label{solution:lemma}
+\ref{exercise:lemma}: lemma.rs}\label{solution:lemma}
 
 \begin{lstlisting}
-lemma void lseg_to_nodes_lemma(struct node *first)
-    requires lseg(first, 0, ?count);
-    ensures nodes(first, count);
+lem lseg_to_Nodes_lemma(first: *mut Node)
+    req lseg(first, 0, ?count);
+    ens Nodes(first, count);
 {
     open lseg(first, 0, count);
-    if (first != 0) {
-        lseg_to_nodes_lemma(first->next);
+    if first != 0 {
+        lseg_to_Nodes_lemma((*first).next);
     }
-    close nodes(first, count);
+    close Nodes(first, count);
 }
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:push_all}: push\_all.c}\label{solution:push_all}
+\ref{exercise:push_all}: push\_all.rs}\label{solution:push_all}
 
 \begin{lstlisting}
 /*@
 
-lemma void lseg_append_lemma(struct node *first)
-    requires lseg(first, ?n, ?count) &*& lseg(n, 0, ?count0);
-    ensures lseg(first, 0, count + count0);
+lem lseg_append_lemma(first: *mut Node)
+    req lseg(first, ?n, ?count) &*& lseg(n, 0, ?count0);
+    ens lseg(first, 0, count + count0);
 {
     open lseg(first, n, count);
-    if (first != n) {
+    if first != n {
         open lseg(n, 0, count0);
         close lseg(n, 0, count0);
-        lseg_append_lemma(first->next);
+        lseg_append_lemma((*first).next);
         close lseg(first, 0, count + count0);
     }
 }
 
 @*/
 
-void stack_push_all(struct stack *stack, struct stack *other)
-    //@ requires stack(stack, ?count) &*& stack(other, ?count0);
-    //@ ensures stack(stack, count0 + count);
-{
-    //@ open stack(stack, count);
-    //@ nodes_to_lseg_lemma(stack->head);
-    //@ open stack(other, count0);
-    //@ nodes_to_lseg_lemma(other->head);
-    struct node *head0 = other->head;
-    free(other);
-    struct node *n = head0;
-    //@ open lseg(head0, 0, count0);
-    if (n != 0) {
-        //@ close lseg(head0, head0, 0);
-        while (n->next != 0)
-            /*@
-            invariant
-                lseg(head0, n, ?count1) &*&
-                n != 0 &*& n->value |-> ?value &*& n->next |-> ?next &*& malloc_block_node(n) &*&
-                lseg(next, 0, count0 - count1 - 1);
-            @*/
-        {
-            n = n->next;
+impl Stack {
+    unsafe fn push_all(stack: *mut Stack, other: *mut Stack)
+    //@ req Stack(stack, ?count) &*& Stack(other, ?count0);
+    //@ ens Stack(stack, count0 + count);
+    {
+        //@ open Stack(stack, count);
+        //@ Nodes_to_lseg_lemma((*stack).head);
+        //@ open Stack(other, count0);
+        //@ Nodes_to_lseg_lemma((*other).head);
+        let head0 = (*other).head;
+        dealloc(other as *mut u8, Layout::new::<Stack>());
+        let mut n = head0;
+        //@ open lseg(head0, 0, count0);
+        if !n.is_null() {
+            //@ close lseg(head0, head0, 0);
+            loop {
+                /*@
+                inv lseg(head0, n, ?count1) &*& n != 0 &*& (*n).value |-> ?n_value &*& 
+                    (*n).next |-> ?next &*&
+                    alloc_block_Node(n) &*&
+                    lseg(next, 0, count0 - count1 - 1);
+                @*/
+                if (*n).next.is_null() {
+                    break;
+                }
+                n = (*n).next;
+                //@ lseg_add_lemma(head0);
+                //@ open lseg(next, 0, count0 - count1 - 1);
+            }
+            //@ open lseg(0, 0, _);
+            (*n).next = (*stack).head;
             //@ lseg_add_lemma(head0);
-            //@ open lseg(next, 0, count0 - count1 - 1);
+            //@ lseg_append_lemma(head0);
+            (*stack).head = head0;
         }
-        //@ open lseg(0, 0, _);
-        n->next = stack->head;
-        //@ lseg_add_lemma(head0);
-        //@ lseg_append_lemma(head0);
-        stack->head = head0;
+        //@ lseg_to_Nodes_lemma((*stack).head);
+        //@ close Stack(stack, count0 + count);
     }
-    //@ lseg_to_nodes_lemma(stack->head);
-    //@ close stack(stack, count0 + count);
 }
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:reverse}: reverse.c}\label{solution:reverse}
+\ref{exercise:reverse}: reverse.rs}\label{solution:reverse}
 
 \begin{lstlisting}
-fixpoint ints ints_append(ints values1, ints values2) {
-    switch (values1) {
-        case ints_nil: return values2;
-        case ints_cons(h, t): return ints_cons(h, ints_append(t, values2));
+fix i32s_append(values1: i32s, values2: i32s) -> i32s {
+    match values1 {
+        i32s_nil => values2,
+        i32s_cons(h, t) => i32s_cons(h, i32s_append(t, values2)),
     }
 }
 
-lemma void ints_append_nil_lemma(ints values)
-    requires true;
-    ensures ints_append(values, ints_nil) == values;
+lem i32s_append_nil_lemma(values: i32s)
+    req true;
+    ens i32s_append(values, i32s_nil) == values;
 {
-    switch (values) {
-        case ints_nil:
-        case ints_cons(h, t):
-            ints_append_nil_lemma(t);
+    match values {
+        i32s_nil => {}
+        i32s_cons(h, t) => {
+            i32s_append_nil_lemma(t);
+        }
     }
 }
 
-lemma void ints_append_assoc_lemma(ints values1, ints values2, ints values3)
-    requires true;
-    ensures
-        ints_append(ints_append(values1, values2), values3) ==
-        ints_append(values1, ints_append(values2, values3));
+lem i32s_append_assoc_lemma(values1: i32s, values2: i32s, values3: i32s)
+    req true;
+    ens i32s_append(i32s_append(values1, values2), values3)
+        == i32s_append(values1, i32s_append(values2, values3));
 {
-    switch (values1) {
-        case ints_nil:
-        case ints_cons(h, t):
-            ints_append_assoc_lemma(t, values2, values3);
+    match values1 {
+        i32s_nil => {}
+        i32s_cons(h, t) => {
+            i32s_append_assoc_lemma(t, values2, values3);
+        }
     }
 }
 
-fixpoint ints ints_reverse(ints values) {
-    switch (values) {
-        case ints_nil: return ints_nil;
-        case ints_cons(h, t): return ints_append(ints_reverse(t), ints_cons(h, ints_nil));
+fix i32s_reverse(values: i32s) -> i32s {
+    match values {
+        i32s_nil => i32s_nil,
+        i32s_cons(h, t) => i32s_append(i32s_reverse(t), i32s_cons(h, i32s_nil))
     }
 }
 
 @*/
 
-void stack_reverse(struct stack *stack)
-    //@ requires stack(stack, ?values);
-    //@ ensures stack(stack, ints_reverse(values));
-{
-    //@ open stack(stack, values);
-    struct node *n = stack->head;
-    struct node *m = 0;
-    //@ close nodes(m, ints_nil);
-    //@ ints_append_nil_lemma(ints_reverse(values));
-    while (n != 0)
-        /*@
-        invariant
-            nodes(m, ?values1) &*& nodes(n, ?values2) &*&
-            ints_reverse(values) == ints_append(ints_reverse(values2), values1);
-        @*/
+impl Stack {
+    unsafe fn reverse(stack: *mut Stack)
+    //@ req Stack(stack, ?values);
+    //@ ens Stack(stack, i32s_reverse(values));
     {
-        //@ open nodes(n, values2);
-        struct node *next = n->next;
-        //@ assert nodes(next, ?values2tail) &*& n->value |-> ?value;
-        n->next = m;
-        m = n;
-        n = next;
-        //@ close nodes(m, ints_cons(value, values1));
-        //@ ints_append_assoc_lemma(ints_reverse(values2tail), ints_cons(value, ints_nil), values1);
+        //@ open Stack(stack, values);
+        let mut n = (*stack).head;
+        let mut m = std::ptr::null_mut();
+        //@ close Nodes(m, i32s_nil);
+        //@ i32s_append_nil_lemma(i32s_reverse(values));
+        loop {
+            /*@
+            inv Nodes(m, ?values1) &*& Nodes(n, ?values2) &*&
+                i32s_reverse(values) == i32s_append(i32s_reverse(values2), values1);
+            @*/
+            if n.is_null() {
+                break;
+            }
+            //@ open Nodes(n, values2);
+            let next = (*n).next;
+            //@ assert Nodes(next, ?values2_tail) &*& (*n).value |-> ?value;
+            (*n).next = m;
+            m = n;
+            n = next;
+            //@ close Nodes(m, i32s_cons(value, values1));
+            //@ i32s_append_assoc_lemma(i32s_reverse(values2_tail), i32s_cons(value, i32s_nil), values1);
+        }
+        //@ open Nodes(n, _);
+        (*stack).head = m;
+        //@ close Stack(stack, i32s_reverse(values));
     }
-    //@ open nodes(n, _);
-    stack->head = m;
-    //@ close stack(stack, ints_reverse(values));
 }
 \end{lstlisting}
 
