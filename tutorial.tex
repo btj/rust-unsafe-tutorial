@@ -1216,41 +1216,41 @@ update the predicate bodies. Further update the functions
 \section{Fixpoint Functions}
 
 How should we update the annotations for function
-\lstinline!stack_pop!? We need to refer to the tail of the
+\lstinline!Stack::pop!? We need to refer to the tail of the
 current sequence in the postcondition and in the close
 statement. Furthermore, in order to specify the return value,
 we need to refer to the head of the current sequence. We can do
 so using \emph{fixpoint functions}:
 \begin{lstlisting}
-fixpoint int ints_head(ints values) {
-    switch (values) {
-        case ints_nil: return 0;
-        case ints_cons(value, values0): return value;
+fix i32s_head(values: i32s) -> i32 {
+    match values {
+        i32s_nil => 0,
+        i32s_cons(value, values0) => value,
     }
 }
 
-fixpoint ints ints_tail(ints values) {
-    switch (values) {
-        case ints_nil: return ints_nil;
-        case ints_cons(value, values0): return values0;
+fix i32s_tail(values: i32s) -> i32s {
+    match values {
+        i32s_nil => i32s_nil,
+        i32s_cons(value, values0) => values0,
     }
 }
 \end{lstlisting}
-Notice that we can use switch statements on inductive
+Notice that we can use match expressions on inductive
 datatypes. There must be exactly one case for each constructor.
 In a case for a constructor that takes parameters, the
 specified parameter names are bound to the corresponding
 constructor argument values that were used when the value was
-constructed. The body of a fixpoint function must be a switch
-statement on one of the function's parameters (called the
+constructed. The body of a fixpoint function must be a match
+expression on one of the function's parameters (called the
 \emph{inductive parameter}). Furthermore, the body of each case
-must be a return statement.
+must be an expression (not a block).
 
-In contrast to regular C functions, a fixpoint function may be
+In contrast to regular Rust functions, a fixpoint function may be
 used in any place where an expression is expected in an
-annotation. This means we can use the \lstinline!ints_head! and
-\lstinline!ints_tail! functions to adapt function
-\lstinline!stack_pop! to the new predicate definitions, and to
+annotation. This means we can use the \lstinline!i32s_head! and
+\lstinline!i32s_tail! functions to adapt function
+\lstinline!Stack::pop! to the new predicate definitions, and to
 specify the return value.
 
 \begin{exercise}\label{exercise:fixpoints}
@@ -1262,30 +1262,31 @@ implementation, and VeriFast can now verify the new main
 function.
 
 \begin{exercise}\label{exercise:sum_full}
-Add a C function \lstinline!stack_get_sum! that returns the sum
+Add a Rust function \lstinline!Stack::get_sum! that returns the sum
 of the elements of a given stack. Implement it using a
-recursive helper function \lstinline!nodes_get_sum!. Specify
-the new C functions using a recursive fixpoint function
-\lstinline!ints_sum!. Remember to turn off arithmetic
+recursive helper function \lstinline!get_nodes_sum!. Specify
+the new Rust functions using a recursive fixpoint function
+\lstinline!i32s_sum!. Remember to turn off arithmetic
 overflow checking in the \textbf{Verify} menu. Verify the
 following main function:
 \end{exercise}
 \begin{lstlisting}
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    int sum = stack_get_sum(s);
-    assert(sum == 30);
-    int result1 = stack_pop(s);
-    assert(result1 == 20);
-    int result2 = stack_pop(s);
-    assert(result2 == 10);
-    stack_dispose(s);
-    return 0;
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        let sum = Stack::get_sum(s);
+        //@ assert sum == 30;
+        let result1 = Stack::pop(s);
+        //@ assert result1 == 20;
+        let result2 = Stack::pop(s);
+        //@ assert result2 == 10;
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
@@ -5107,61 +5108,65 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:fixpoints}: fixpoints.c}\label{solution:fixpoints}
+\ref{exercise:fixpoints}: fixpoints.rs}\label{solution:fixpoints}
 
 \begin{lstlisting}
-int stack_pop(struct stack *stack)
-    //@ requires stack(stack, ?values) &*& values != ints_nil;
-    //@ ensures stack(stack, ints_tail(values)) &*& result == ints_head(values);
+unsafe fn pop(stack: *mut Stack) -> i32
+//@ req Stack(stack, ?values) &*& values != i32s_nil;
+//@ ens Stack(stack, i32s_tail(values)) &*& result == i32s_head(values);
 {
-    //@ open stack(stack, values);
-    struct node *head = stack->head;
-    //@ open nodes(head, values);
-    int result = head->value;
-    stack->head = head->next;
-    free(head);
-    //@ close stack(stack, ints_tail(values));
-    return result;
+    //@ open Stack(stack, values);
+    let head = (*stack).head;
+    //@ open Nodes(head, values);
+    let result = (*head).value;
+    (*stack).head = (*head).next;
+    dealloc(head as *mut u8, Layout::new::<Node>());
+    //@ close Stack(stack, i32s_tail(values));
+    result
 }
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:sum_full}: sum\_full.c}\label{solution:sum_full}
+\ref{exercise:sum_full}: sum\_full.rs}\label{solution:sum_full}
 
 \begin{lstlisting}
 /*@
 
-fixpoint int ints_sum(ints values) {
-    switch (values) {
-        case ints_nil: return 0;
-        case ints_cons(value, values0): return value + ints_sum(values0);
+fix i32s_sum(values: i32s) -> i32 {
+    match values {
+        i32s_nil => 0,
+        i32s_cons(value, values0) => value + i32s_sum(values0),
     }
 }
 
 @*/
 
-int nodes_get_sum(struct node *node)
-    //@ requires nodes(node, ?values);
-    //@ ensures nodes(node, values) &*& result == ints_sum(values);
+unsafe fn get_nodes_sum(node: *mut Node) -> i32
+//@ req Nodes(node, ?values);
+//@ ens Nodes(node, values) &*& result == i32s_sum(values);
 {
-    //@ open nodes(node, values);
-    int result = 0;
-    if (node != 0) {
-        int tailSum = nodes_get_sum(node->next);
-        result = node->value + tailSum;
+    //@ open Nodes(node, values);
+    let mut result = 0;
+    if !node.is_null() {
+        let tail_sum = get_nodes_sum((*node).next);
+        result = (*node).value + tail_sum;
     }
-    //@ close nodes(node, values);
-    return result;
+    //@ close Nodes(node, values);
+    result
 }
 
-int stack_get_sum(struct stack *stack)
-    //@ requires stack(stack, ?values);
-    //@ ensures stack(stack, values) &*& result == ints_sum(values);
-{
-    //@ open stack(stack, values);
-    int result = nodes_get_sum(stack->head);
-    //@ close stack(stack, values);
-    return result;
+impl Stack {
+
+    unsafe fn get_sum(stack: *mut Stack) -> i32
+    //@ req Stack(stack, ?values);
+    //@ ens Stack(stack, values) &*& result == i32s_sum(values);
+    {
+        //@ open Stack(stack, values);
+        let result = get_nodes_sum((*stack).head);
+        //@ close Stack(stack, values);
+        result
+    }
+
 }
 \end{lstlisting}
 
