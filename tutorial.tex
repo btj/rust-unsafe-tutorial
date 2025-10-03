@@ -1713,42 +1713,41 @@ parameters in Section~\ref{section:byref-params}.
 \section{By-Reference Parameters}\label{section:byref-params}
 
 Here's an alternative implementation of the
-\lstinline!stack_filter! function from
+\lstinline!Stack::filter! function from
 Section~\ref{section:function-pointers}. Instead of
 re-assigning each next pointer, it passes a pointer to the next
 pointer and only re-assigns it when it changes.
 \begin{lstlisting}
-void nodes_filter(struct node **n, int_predicate *p) {
-    if (*n != 0) {
-        bool keep = p((*n)->value);
-        if (keep) {
-            nodes_filter(&(*n)->next, p);
+unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate) {
+    if !(*n).is_null() {
+        let keep = p((**n).value);
+        if keep {
+            filter_nodes(&raw mut (**n).next, p);
         } else {
-            struct node *next = (*n)->next;
-            free(*n);
-            *n = next;
-            nodes_filter(n, p);
+            let next_ = (**n).next;
+            dealloc(*n as *mut u8, Layout::new::<Node>());
+            *n = next_;
+            filter_nodes(n, p);
         }
     }
 }
 
-void stack_filter(struct stack *stack, int_predicate *p) {
-    nodes_filter(&stack->head, p);
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate) {
+        filter_nodes(&raw mut (*stack).head, p);
+    }
 }
 \end{lstlisting}
 In this program, we are effectively passing the pointer to the
-current node to function \lstinline!nodes_filter! by reference.
-Inside function \lstinline!nodes_filter!, we dereference
+current node to function \lstinline!filter_nodes! by reference.
+Inside function \lstinline!filter_nodes!, we dereference
 \lstinline!n! to obtain the pointer to the current node.
 VeriFast treats pointer dereferences in a way similar to field
 dereferences. However, instead of looking in the symbolic heap
-for a field chunk, it looks for a generic variable chunk; in
-this case, since the pointer being dereferenced points to a
-variable that holds a pointer, it looks for a
-\lstinline!pointer! chunk. Predicate \lstinline!pointer! is
-defined in \texttt{prelude.h} as follows:
+for a field chunk, it looks for a generic \lstinline|points_to| chunk. Predicate \lstinline!points_to! is
+defined in \texttt{prelude\_core.rsspec} as follows:
 \begin{lstlisting}
-predicate pointer(void **pp; void *p);
+pred points_to<T>(p: *T; v: T);
 \end{lstlisting}
 (We will discuss the meaning of the semicolon later; for now,
 just read it like a comma.) Like in the case of a field chunk,
@@ -1756,52 +1755,45 @@ the first argument is the address of the variable, and the
 second argument is the current value of the variable.
 
 It follows that the following is a valid contract for function
-\lstinline!nodes_filter!:\footnote{This sentence is \emph{almost} true. This is a valid contract for function \lstinline!nodes_filter! only if C's \emph{effective types} rules are disabled, by specifying \lstinline|-fno-strict-aliasing| on the C compiler's and VeriFast's command line, or by checking \emph{Assume untyped memory} in the VeriFast IDE's Verify menu. To verify compliance with C's effective types rules when accessing the variable pointed to by \lstinline|n| as a variable of type \lstinline|struct node *|, VeriFast checks that that is that variable's \emph{effective type}, expressed in VeriFast syntax as \lstinline|has_type(node, &typeid(struct node *)) == true|. You can ignore this complexity by using the points-to syntax \lstinline!*n |-> ?node!, which implies both the \lstinline|pointer| chunk and the \lstinline|has_type| fact.}
+\lstinline!filter_nodes!:
 \begin{lstlisting}
-void nodes_filter(struct node **n, int_predicate *p)
-    //@ requires pointer(n, ?node) &*& nodes(node, _) &*& is_int_predicate(p) == true;
-    //@ ensures pointer(n, ?node0) &*& nodes(node0, _);
+unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate)
+//@ req points_to(n, ?node) &*& Nodes(node, _) &*& [_]is_I32Predicate(p);
+//@ ens points_to(n, ?node0) &*& Nodes(node0, _);
 \end{lstlisting}
 
-In order to be able to call \lstinline!nodes_filter! from
-\lstinline!stack_filter!, we must produce a \lstinline!pointer!
+In order to be able to call \lstinline!filter_nodes! from
+\lstinline!Stack::filter!, we must produce a \lstinline!points_to!
 chunk. Specifically, we must transform the
-\lstinline!stack_head! chunk into a \lstinline!pointer! chunk.
-We do this simply by opening the \lstinline!stack_head! chunk.
-To turn the pointer chunk back into a \lstinline!stack_head!
-chunk, we simply close the \lstinline!stack_head! chunk again:
+\lstinline!Stack_head! chunk into a \lstinline!points_to! chunk.
+We do this simply by opening the \lstinline!Stack_head! chunk.
+To turn the pointer chunk back into a \lstinline!Stack_head!
+chunk, we simply close the \lstinline!Stack_head! chunk again:
 \begin{lstlisting}
-void stack_filter(struct stack *stack, int_predicate *p)
-    //@ requires stack(stack, _) &*& is_int_predicate(p) == true;
-    //@ ensures stack(stack, _);
+unsafe fn filter(stack: *mut Stack, p: I32Predicate)
+//@ req Stack(stack, _) &*& [_]is_I32Predicate(p);
+//@ ens Stack(stack, _);
 {
-    //@ open stack(stack, _);
-    //@ open stack_head(stack, _);
-    nodes_filter(&stack->head, p);
-    //@ assert pointer(&stack->head, ?head) &*& nodes(head, ?count);
-    //@ close stack_head(stack, head);
-    //@ open nodes(head, count);
-    //@ close nodes(head, count);
-    //@ close stack(stack, count);
+    //@ open Stack(stack, _);
+    //@ open Stack_head(stack, _);
+    filter_nodes(&raw mut (*stack).head, p);
+    //@ close Stack_head(stack, ?head);
+    //@ open Nodes(head, ?count);
+    //@ close Nodes(head, count);
+    //@ close Stack(stack, count);
 }
 \end{lstlisting}
-Notice that, since we cannot use patterns in close statements,
-we need to bind the value of the head field to a variable
-\lstinline!head! before we can close the \lstinline!stack_head!
-chunk.
 
 \begin{exercise}\label{exercise:byref}
-Verify function \lstinline!nodes_filter!.
+Verify function \lstinline!filter_nodes!.
 \end{exercise}
 
-Note: in the same way that field chunk assertions can be written more elegantly using a points-to syntax, generic variable chunk assertions can be written using a points-to syntax as well. For example, we can also write the spec of \lstinline!nodes_filter! as follows:
+Note: in the same way that field chunk assertions can be written more elegantly using a points-to syntax, generic \lstinline|points_to| chunk assertions can be written using a points-to syntax as well. For example, we can also write the spec of \lstinline!filter_nodes! as follows:
 \begin{lstlisting}
-void nodes_filter(struct node **n, int_predicate *p)
-    //@ requires *n |-> ?node &*& nodes(node, _) &*& is_int_predicate(p) == true;
-    //@ ensures *n |-> ?node0 &*& nodes(node0, _);
+unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate)
+//@ req *n |-> ?node &*& Nodes(node, _) &*& [_]is_I32Predicate(p);
+//@ ens *n |-> ?node0 &*& Nodes(node0, _);
 \end{lstlisting}
-
-This has the advantage that it automatically desugars to the correct type of variable chunk (e.g.~$\mathsf{integer}$ for variables of type \verb!int! and $\mathsf{character}$ for variables of type \verb!char!).
 
 \section{Arithmetic Overflow}
 
@@ -5514,29 +5506,28 @@ fn main()
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:byref}: byref.c}\label{solution:byref}
+\ref{exercise:byref}: byref.rs}\label{solution:byref}
 
 \begin{lstlisting}
-void nodes_filter(struct node **n, int_predicate *p)
-    //@ requires pointer(n, ?node) &*& nodes(node, _) &*& is_int_predicate(p) == true;
-    //@ ensures pointer(n, ?node0) &*& nodes(node0, _);
+unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate)
+//@ req *n |-> ?node &*& Nodes(node, _) &*& [_]is_I32Predicate(p);
+//@ ens *n |-> ?node0 &*& Nodes(node0, _);
 {
-    if (*n != 0) {
-        //@ open nodes(node, _);
-        bool keep = p((*n)->value);
-        if (keep) {
-            //@ open node_next(node, _);
-            nodes_filter(&(*n)->next, p);
-            //@ assert pointer(&((struct node *)node)->next, ?next) &*& nodes(next, ?count);
-            //@ close node_next(node, next);
-            //@ open nodes(next, count);
-            //@ close nodes(next, count);
-            //@ close nodes(node, count + 1);
+    if !(*n).is_null() {
+        //@ open Nodes(node, _);
+        let keep = p((**n).value);
+        if keep {
+            //@ open Node_next(node, _);
+            filter_nodes(&raw mut (**n).next, p);
+            //@ close Node_next(node, ?next);
+            //@ open Nodes(next, ?count);
+            //@ close Nodes(next, count);
+            //@ close Nodes(node, count + 1);
         } else {
-            struct node *next = (*n)->next;
-            free(*n);
-            *n = next;
-            nodes_filter(n, p);
+            let next_ = (**n).next;
+            dealloc(*n as *mut u8, Layout::new::<Node>());
+            *n = next_;
+            filter_nodes(n, p);
         }
     }
 }
