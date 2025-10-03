@@ -38,7 +38,7 @@
 
 %\lstset{language=c,columns=fullflexible,basicstyle=\ttfamily,identifierstyle=\itshape} %,literate={&*&}{{$\mathrm{{\&}{*}{\&}}$}}1}
 \lstset{language=Rust,columns=fullflexible,basicstyle=\ttfamily} %,literate={&*&}{{$\mathrm{{\&}{*}{\&}}$}}1}
-\lstset{moredelim=**[s][\itshape]{/*}{*/},moredelim=**[l][\itshape]{//},morekeywords={req,ens,true,false,pred,lem,fix,pred_ctor,leak,open,close,bool,inv,inductive,assert,pred_fam,pred_fam_inst}}
+\lstset{moredelim=**[s][\itshape]{/*}{*/},moredelim=**[l][\itshape]{//},morekeywords={req,ens,true,false,pred,lem,fix,pred_ctor,leak,open,close,bool,inv,inductive,assert,pred_fam,pred_fam_inst,fn_type,produce_fn_ptr_chunk}}
 
 \newtheorem{exercise}{Exercise}
 
@@ -1582,125 +1582,129 @@ You'll need to define additional fixpoints and lemmas.
 
 Let's write a function that takes a stack and removes those elements that do not satisfy a given predicate:
 \begin{lstlisting}
-typedef bool int_predicate(int x);
+type I32Predicate = unsafe fn(i32) -> bool;
 
-struct node *nodes_filter(struct node *n, int_predicate *p)
-    //@ requires nodes(n, _);
-    //@ ensures nodes(result, _);
+unsafe fn filter_nodes(n: *mut Node, p: I32Predicate) -> *mut Node
+//@ req Nodes(n, _);
+//@ ens Nodes(result, _);
 {
-    if (n == 0) {
-        return 0;
+    if n.is_null() {
+        return std::ptr::null_mut();
     } else {
-        //@ open nodes(n, _);
-        bool keep = p(n->value);
-        if (keep) {
-            struct node *next = nodes_filter(n->next, p);
-            //@ open nodes(next, ?count);
-            //@ close nodes(next, count);
-            n->next = next;
-            //@ close nodes(n, count + 1);
+        //@ open Nodes(n, _);
+        let keep = p((*n).value);
+        let next;
+        if keep {
+            next = filter_nodes((*n).next, p);
+            //@ open Nodes(next, ?count);
+            //@ close Nodes(next, count);
+            (*n).next = next;
+            //@ close Nodes(n, count + 1);
             return n;
         } else {
-            struct node *next = n->next;
-            free(n);
-            struct node *result = nodes_filter(next, p);
+            next = (*n).next;
+            dealloc(n as *mut u8, Layout::new::<Node>());
+            let result = filter_nodes(next, p);
             return result;
         }
     }
 }
 
-void stack_filter(struct stack *stack, int_predicate *p)
-    //@ requires stack(stack, _);
-    //@ ensures stack(stack, _);
-{
-    //@ open stack(stack, _);
-    struct node *head = nodes_filter(stack->head, p);
-    //@ assert nodes(head, ?count);
-    stack->head = head;
-    //@ open nodes(head, count);
-    //@ close nodes(head, count);
-    //@ close stack(stack, count);
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate)
+    //@ req Stack(stack, _);
+    //@ ens Stack(stack, _);
+    {
+        //@ open Stack(stack, _);
+        let head = filter_nodes((*stack).head, p);
+        //@ assert Nodes(head, ?count);
+        (*stack).head = head;
+        //@ open Nodes(head, count);
+        //@ close Nodes(head, count);
+        //@ close Stack(stack, count);
+    }
 }
 
-bool neq_20(int x)
-    //@ requires true;
-    //@ ensures true;
+unsafe fn neq_20(x: i32) -> bool
+//@ req true;
+//@ ens true;
 {
-    return x != 20;
+    x != 20
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
-    stack_filter(s, neq_20);
-    stack_dispose(s);
-    return 0;
+fn main() {
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        Stack::filter(s, neq_20);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
 This program does not verify. VeriFast does not know what
 contract to use to verify the call of \lstinline!p! in function
-\lstinline!nodes_filter!. VeriFast requires that each function
-type has a contract:
-\begin{lstlisting}
-typedef bool int_predicate(int x);
-    //@ requires true;
-    //@ ensures true;
-\end{lstlisting}
-However, this is not sufficient. Even though \lstinline!p! is
-of type \lstinline!int_predicate *!, this does not guarantee
-that it points to a function that complies with the
-\lstinline!int_predicate! function type's signature and
-contract. Indeed, any integer can be cast to a pointer and any
-pointer can be cast to a function pointer. Therefore, VeriFast
-introduces a pure boolean function \lstinline!is_T! for each
-function type \lstinline!T! declared in the program. When
-verifying a call through a function pointer \lstinline!p! of
-type \lstinline!T *!, VeriFast checks that \lstinline!is_T(p)!
-is true. In order to generate an \lstinline!is_T(f)! fact for a
-given function \lstinline!f!, \lstinline!f!'s header must
-include a function type implementation clause:
-\begin{lstlisting}
-bool neq_20(int x) //@ : int_predicate
-    //@ requires true;
-    //@ ensures true;
-\end{lstlisting}
-This further causes VeriFast to check that the contract of
-\lstinline!neq_20! subsumes the contract of
-\lstinline!int_predicate!.
+\lstinline!filter_nodes!. Specifically, when symbolically executing a call of a function pointer \lstinline|p|,
+VeriFast looks for a \emph{function type chunk} \lstinline|is_T(p)| in the symbolic heap that asserts that \lstinline|p| satisfies \emph{VeriFast function type \lstinline|T|}.
 
-Finally, we must pass the \lstinline!is_int_predicate! fact
-from the client to the call site:
+We therefore need to define a VeriFast function type:
 \begin{lstlisting}
-struct node *nodes_filter(struct node *n, int_predicate *p)
-    //@ requires nodes(n, _) &*& is_int_predicate(p) == true;
-    //@ ensures nodes(result, _);
-
-void stack_filter(struct stack *stack, int_predicate *p)
-    //@ requires stack(stack, _) &*& is_int_predicate(p) == true;
-    //@ ensures stack(stack, _);
+/*@
+fn_type I32Predicate() = unsafe fn(x: i32) -> bool;
+    req true;
+    ens true;
+@*/
 \end{lstlisting}
-Notice that we write \lstinline!is_int_predicate(p) == true!
-instead of \lstinline!is_int_predicate(p)!. VeriFast parses the
-latter form as a predicate assertion, and since there is no
-such predicate, rejects it.
+It is like a Rust type definition, except that it also associates a precondition and a postcondition
+with the type.
+
+We must update the precondition of functions \lstinline|filter_nodes| and \lstinline|Stack::filter| to
+assert an appropriate function type chunk:
+\begin{lstlisting}
+unsafe fn filter_nodes(n: *mut Node, p: I32Predicate) -> *mut Node
+//@ req Nodes(n, _) &*& [_]is_I32Predicate(p);
+//@ ens Nodes(result, _);
+
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate)
+    //@ req Stack(stack, _) &*& [_]is_I32Predicate(p);
+    //@ ens Stack(stack, _);
+\end{lstlisting}
+(The \lstinline|[_]| prefix denotes duplicability of the chunk; it will be explained in Section~\ref{section:leaking}.)
+
+Finally, before calling \lstinline|Stack::filter| in the main function, we must \emph{produce} the function type chunk, using a \lstinline|produce_fn_ptr_chunk T(f)()(params) { proof }| ghost command. This command requires a sequence of ghost commands \lstinline|proof|, exactly one of which must be a \lstinline|call();| statement, that proves that the function \lstinline|f| satisfies the function type's contract. Specifically, VeriFast checks the proof by first producing the function type's precondition, then symbolically executing \lstinline|proof|, where \lstinline|call();| is symbolically executed like a call of \lstinline|f|, and finally consumes the function type's postcondition:
+\begin{lstlisting}
+fn main()
+//@ req true;
+//@ ens true;
+{
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        /*@
+        produce_fn_ptr_chunk I32Predicate(neq_20)()(x) {
+            call();
+        }
+        @*/
+        Stack::filter(s, neq_20);
+        Stack::dispose(s);
+    }
+}
+\end{lstlisting}
 
 \begin{exercise}\label{exercise:filter}
 Put all the pieces together.
 \end{exercise}
 
-The state of our \lstinline!stack_filter! function is
+The state of our \lstinline!Stack::filter! function is
 unsatisfactory in two ways: firstly, the
-\lstinline!int_predicate! function cannot read any memory
+\lstinline!I32Predicate! function cannot read any memory
 locations, since its precondition does not require any heap
 chunks; it follows that you cannot filter all elements that are
 greater than some user-provided value, for example. This will
-be solved using predicate families in
+be solved using parameterized function types in
 Section~\ref{section:predicate-families}. Secondly, the
 implementation re-assigns each next pointer, even if only a few
 elements are removed. This will be solved using by-reference
@@ -5338,154 +5342,174 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:filter}: filter.c}\label{solution:filter}
+\ref{exercise:filter}: filter.rs}\label{solution:filter}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
+//@ use std::alloc::{Layout, alloc_block};
 
-struct node {
-    struct node *next;
-    int value;
-};
+struct Node {
+    next: *mut Node,
+    value: i32,
+}
 
-struct stack {
-    struct node *head;
-};
+struct Stack {
+    head: *mut Node,
+}
 
 /*@
 
-predicate nodes(struct node *node, int count) =
-    node == 0 ?
+pred Nodes(node: *mut Node, count: i32) =
+    if node == 0 {
         count == 0
-    :
-        0 < count &*& node->next |-> ?next &*& node->value |-> ?value &*&
-        malloc_block_node(node) &*& nodes(next, count - 1);
+    } else {
+        0 < count &*&
+        (*node).next |-> ?next &*& (*node).value |-> ?value &*&
+        alloc_block_Node(node) &*& Nodes(next, count - 1)
+    };
 
-predicate stack(struct stack *stack, int count) =
-    stack->head |-> ?head &*& malloc_block_stack(stack) &*& 0 <= count &*& nodes(head, count);
+pred Stack(stack: *mut Stack, count: i32) =
+    (*stack).head |-> ?head &*& alloc_block_Stack(stack) &*& 0 <= count &*& Nodes(head, count);
+
+fn_type I32Predicate() = unsafe fn(x: i32) -> bool;
+    req true;
+    ens true;
 
 @*/
 
-struct stack *create_stack()
-    //@ requires true;
-    //@ ensures stack(result, 0);
-{
-    struct stack *stack = malloc(sizeof(struct stack));
-    if (stack == 0) { abort(); }
-    stack->head = 0;
-    //@ close nodes(0, 0);
-    //@ close stack(stack, 0);
-    return stack;
-}
+type I32Predicate = unsafe fn(i32) -> bool;
 
-void stack_push(struct stack *stack, int value)
-    //@ requires stack(stack, ?count);
-    //@ ensures stack(stack, count + 1);
+unsafe fn filter_nodes(n: *mut Node, p: I32Predicate) -> *mut Node
+//@ req Nodes(n, _) &*& [_]is_I32Predicate(p);
+//@ ens Nodes(result, _);
 {
-    //@ open stack(stack, count);
-    struct node *n = malloc(sizeof(struct node));
-    if (n == 0) { abort(); }
-    n->next = stack->head;
-    n->value = value;
-    stack->head = n;
-    //@ close nodes(n, count + 1);
-    //@ close stack(stack, count + 1);
-}
-
-int stack_pop(struct stack *stack)
-    //@ requires stack(stack, ?count) &*& 0 < count;
-    //@ ensures stack(stack, count - 1);
-{
-    //@ open stack(stack, count);
-    struct node *head = stack->head;
-    //@ open nodes(head, count);
-    int result = head->value;
-    stack->head = head->next;
-    free(head);
-    //@ close stack(stack, count - 1);
-    return result;
-}
-
-typedef bool int_predicate(int x);
-    //@ requires true;
-    //@ ensures true;
-
-struct node *nodes_filter(struct node *n, int_predicate *p)
-    //@ requires nodes(n, _) &*& is_int_predicate(p) == true;
-    //@ ensures nodes(result, _);
-{
-    if (n == 0) {
-        return 0;
+    if n.is_null() {
+        std::ptr::null_mut()
     } else {
-        //@ open nodes(n, _);
-        bool keep = p(n->value);
-        if (keep) {
-            struct node *next = nodes_filter(n->next, p);
-            //@ open nodes(next, ?count);
-            //@ close nodes(next, count);
-            n->next = next;
-            //@ close nodes(n, count + 1);
-            return n;
+        //@ open Nodes(n, _);
+        let keep = p((*n).value);
+        let next;
+        if keep {
+            next = filter_nodes((*n).next, p);
+            //@ open Nodes(next, ?count);
+            //@ close Nodes(next, count);
+            (*n).next = next;
+            //@ close Nodes(n, count + 1);
+            n
         } else {
-            struct node *next = n->next;
-            free(n);
-            struct node *result = nodes_filter(next, p);
-            return result;
+            next = (*n).next;
+            dealloc(n as *mut u8, Layout::new::<Node>());
+            let result = filter_nodes(next, p);
+            result
         }
     }
 }
 
-void stack_filter(struct stack *stack, int_predicate *p)
-    //@ requires stack(stack, _) &*& is_int_predicate(p) == true;
-    //@ ensures stack(stack, _);
+unsafe fn dispose_nodes(n: *mut Node)
+//@ req Nodes(n, _);
+//@ ens true;
 {
-    //@ open stack(stack, _);
-    struct node *head = nodes_filter(stack->head, p);
-    //@ assert nodes(head, ?count);
-    stack->head = head;
-    //@ open nodes(head, count);
-    //@ close nodes(head, count);
-    //@ close stack(stack, count);
-}
-
-void nodes_dispose(struct node *n)
-    //@ requires nodes(n, _);
-    //@ ensures true;
-{
-    //@ open nodes(n, _);
-    if (n != 0) {
-        nodes_dispose(n->next);
-        free(n);
+    //@ open Nodes(n, _);
+    if !n.is_null() {
+        dispose_nodes((*n).next);
+        dealloc(n as *mut u8, Layout::new::<Node>());
     }
 }
 
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, _);
-    //@ ensures true;
-{
-    //@ open stack(stack, _);
-    nodes_dispose(stack->head);
-    free(stack);
+impl Stack {
+
+    unsafe fn create() -> *mut Stack
+    //@ req true;
+    //@ ens Stack(result, 0);
+    {
+        let stack = alloc(Layout::new::<Stack>()) as *mut Stack;
+        if stack.is_null() {
+            handle_alloc_error(Layout::new::<Stack>());
+        }
+        (*stack).head = std::ptr::null_mut();
+        //@ close Nodes(0, 0);
+        //@ close Stack(stack, 0);
+        stack
+    }
+    
+    unsafe fn push(stack: *mut Stack, value: i32)
+    //@ req Stack(stack, ?count);
+    //@ ens Stack(stack, count + 1);
+    {
+        //@ open Stack(stack, count);
+        let n = alloc(Layout::new::<Node>()) as *mut Node;
+        if n.is_null() {
+            handle_alloc_error(Layout::new::<Node>());
+        }
+        (*n).next = (*stack).head;
+        (*n).value = value;
+        (*stack).head = n;
+        //@ close Nodes(n, count + 1);
+        //@ close Stack(stack, count + 1);
+    }
+
+    unsafe fn pop(stack: *mut Stack) -> i32
+    //@ req Stack(stack, ?count) &*& 0 < count;
+    //@ ens Stack(stack, count - 1);
+    {
+        //@ open Stack(stack, count);
+        let head = (*stack).head;
+        //@ open Nodes(head, count);
+        let result = (*head).value;
+        (*stack).head = (*head).next;
+        dealloc(head as *mut u8, Layout::new::<Node>());
+        //@ close Stack(stack, count - 1);
+        result
+    }
+    
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate)
+    //@ req Stack(stack, _) &*& [_]is_I32Predicate(p);
+    //@ ens Stack(stack, _);
+    {
+        //@ open Stack(stack, _);
+        let head = filter_nodes((*stack).head, p);
+        //@ assert Nodes(head, ?count);
+        (*stack).head = head;
+        //@ open Nodes(head, count);
+        //@ close Nodes(head, count);
+        //@ close Stack(stack, count);
+    }
+    
+    unsafe fn dispose(stack: *mut Stack)
+    //@ req Stack(stack, _);
+    //@ ens true;
+    {
+        //@ open Stack(stack, _);
+        dispose_nodes((*stack).head);
+        dealloc(stack as *mut u8, Layout::new::<Stack>());
+    }
+
 }
 
-bool neq_20(int x) //@ : int_predicate
-    //@ requires true;
-    //@ ensures true;
+unsafe fn neq_20(x: i32) -> bool
+//@ req true;
+//@ ens true;
 {
-    return x != 20;
+    x != 20
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
-    stack_filter(s, neq_20);
-    stack_dispose(s);
-    return 0;
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        /*@
+        produce_fn_ptr_chunk I32Predicate(neq_20)()(x) {
+            call();
+        }
+        @*/
+        Stack::filter(s, neq_20);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
