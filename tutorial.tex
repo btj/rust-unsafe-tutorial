@@ -1163,23 +1163,24 @@ original values in the loop invariant.
 Let's return to our initial annotated stack implementation (the
 solution to Exercise~\ref{exercise:stack}). The annotations do
 not specify full functional correctness. In particular, the
-contract of function \lstinline!stack_pop! does not specify the
+contract of function \lstinline!Stack::pop! does not specify the
 function's return value. As a result, using these annotations,
 we cannot verify the following main function:
 \begin{lstlisting}
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    int result1 = stack_pop(s);
-    assert(result1 == 20);
-    int result2 = stack_pop(s);
-    assert(result2 == 10);
-    stack_dispose(s);
-    return 0;
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        let result1 = Stack::pop(s);
+        //@ assert result1 == 20;
+        let result2 = Stack::pop(s);
+        //@ assert result2 == 10;
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
@@ -1188,28 +1189,28 @@ the number of elements in the stack, we need to track the
 values of the elements as well. In other words, we need to
 track the precise sequence of elements currently stored by the
 stack. We can represent a sequence of integers using an
-\emph{inductive datatype} \lstinline!ints!:
+\emph{inductive datatype} \lstinline!i32s!:
 \begin{lstlisting}
-inductive ints = ints_nil | ints_cons(int, ints);
+inductive i32s = i32s_nil | i32s_cons(i32, i32s);
 \end{lstlisting}
-This declaration declares a type \lstinline!ints! with two
-\emph{constructors} \lstinline!ints_nil! and
-\lstinline!ints_cons!. \lstinline!ints_nil! represents the
-empty sequence. \lstinline!ints_cons! constructs a nonempty
+This declaration declares a type \lstinline!i32s! with two
+\emph{constructors} \lstinline!i32s_nil! and
+\lstinline!i32s_cons!. \lstinline!i32s_nil! represents the
+empty sequence. \lstinline!i32s_cons! constructs a nonempty
 sequence given the \emph{head} (the first element) and the
 \emph{tail} (the remaining elements). For example, the sequence
 1,2,3 can be written as
 \begin{lstlisting}
-ints_cons(1, ints_cons(2, ints_cons(3, ints_nil)))
+i32s_cons(1, i32s_cons(2, i32s_cons(3, i32s_nil)))
 \end{lstlisting}
 
 \begin{exercise}\label{exercise:values}
 Replace the \lstinline!count! parameter of the
-\lstinline!nodes! and \lstinline!stack! predicates with a
-\lstinline!values! parameter of type \lstinline!ints! and
+\lstinline!Nodes! and \lstinline!Stack! predicates with a
+\lstinline!values! parameter of type \lstinline!i32s! and
 update the predicate bodies. Further update the functions
-\lstinline!create_stack!, \lstinline!stack_push!, and
-\lstinline!stack_dispose!. Don't worry about \lstinline!stack_pop! for now.
+\lstinline!Stack::create!, \lstinline!Stack::push!, and
+\lstinline!Stack::dispose!. Don't worry about \lstinline!Stack::pop! for now.
 \end{exercise}
 
 \section{Fixpoint Functions}
@@ -5027,69 +5028,81 @@ unsafe fn popn(stack: *mut Stack, n: i32)
 \end{lstlisting}
 
 \subsection{Exercise
-\ref{exercise:values}: values.c}\label{solution:values}
+\ref{exercise:values}: values.rs}\label{solution:values}
 
 \begin{lstlisting}
-#include "stdlib.h"
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error, dealloc};
+//@ use std::alloc::{Layout, alloc_block};
 
-struct node {
-    struct node *next;
-    int value;
-};
+struct Node {
+    next: *mut Node,
+    value: i32,
+}
 
-struct stack {
-    struct node *head;
-};
+struct Stack {
+    head: *mut Node,
+}
 
 /*@
 
-inductive ints = ints_nil | ints_cons(int, ints);
+inductive i32s = i32s_nil | i32s_cons(i32, i32s);
 
-predicate nodes(struct node *node, ints values) =
-    node == 0 ?
-        values == ints_nil
-    :
-        node->next |-> ?next &*& node->value |-> ?value &*& malloc_block_node(node) &*&
-        nodes(next, ?values0) &*& values == ints_cons(value, values0);
+pred Nodes(node: *mut Node, values: i32s) =
+    if node == 0 {
+        values == i32s_nil
+    } else {
+        (*node).next |-> ?next &*& (*node).value |-> ?value &*&
+        alloc_block_Node(node) &*& Nodes(next, ?values0) &*&
+        values == i32s_cons(value, values0)
+    };
 
-predicate stack(struct stack *stack, ints values) =
-    stack->head |-> ?head &*& malloc_block_stack(stack) &*& nodes(head, values);
+pred Stack(stack: *mut Stack, values: i32s) =
+    (*stack).head |-> ?head &*& alloc_block_Stack(stack) &*& Nodes(head, values);
 
 @*/
 
-struct stack *create_stack()
-    //@ requires true;
-    //@ ensures stack(result, ints_nil);
-{
-    struct stack *stack = malloc(sizeof(struct stack));
-    if (stack == 0) { abort(); }
-    stack->head = 0;
-    //@ close nodes(0, ints_nil);
-    //@ close stack(stack, ints_nil);
-    return stack;
-}
+impl Stack {
 
-void stack_push(struct stack *stack, int value)
-    //@ requires stack(stack, ?values);
-    //@ ensures stack(stack, ints_cons(value, values));
-{
-    //@ open stack(stack, values);
-    struct node *n = malloc(sizeof(struct node));
-    if (n == 0) { abort(); }
-    n->next = stack->head;
-    n->value = value;
-    stack->head = n;
-    //@ close nodes(n, ints_cons(value, values));
-    //@ close stack(stack, ints_cons(value, values));
-}
+    unsafe fn create() -> *mut Stack
+    //@ req true;
+    //@ ens Stack(result, i32s_nil);
+    {
+        let stack = alloc(Layout::new::<Stack>()) as *mut Stack;
+        if stack.is_null() {
+            handle_alloc_error(Layout::new::<Stack>());
+        }
+        (*stack).head = std::ptr::null_mut();
+        //@ close Nodes(0, i32s_nil);
+        //@ close Stack(stack, i32s_nil);
+        stack
+    }
+    
+    unsafe fn push(stack: *mut Stack, value: i32)
+    //@ req Stack(stack, ?values);
+    //@ ens Stack(stack, i32s_cons(value, values));
+    {
+        //@ open Stack(stack, values);
+        let n = alloc(Layout::new::<Node>()) as *mut Node;
+        if n.is_null() {
+            handle_alloc_error(Layout::new::<Node>());
+        }
+        (*n).next = (*stack).head;
+        (*n).value = value;
+        (*stack).head = n;
+        //@ close Nodes(n, i32s_cons(value, values));
+        //@ close Stack(stack, i32s_cons(value, values));
+    }
 
-void stack_dispose(struct stack *stack)
-    //@ requires stack(stack, ints_nil);
-    //@ ensures true;
-{
-    //@ open stack(stack, ints_nil);
-    //@ open nodes(_, _);
-    free(stack);
+    unsafe fn dispose(stack: *mut Stack)
+    //@ req Stack(stack, i32s_nil);
+    //@ ens true;
+    {
+        //@ open Stack(stack, i32s_nil);
+        //@ open Nodes(_, _);
+        dealloc(stack as *mut u8, Layout::new::<Stack>());
+    }
+
 }
 \end{lstlisting}
 
