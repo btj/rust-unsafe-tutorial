@@ -1799,73 +1799,58 @@ unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate)
 
 Consider the following program:
 \begin{lstlisting}
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn thirty_thousand() -> i16
+//@ req true;
+//@ ens result == 30000;
+{ 30_000 }
+
+fn main()
+//@ req true;
+//@ ens true;
 {
-    int a = 30000;
-    int b = 30000;
-    int c = a + b;
-    return b < c;
+  let a = thirty_thousand();
+  let b = thirty_thousand();
+  let c: i16 = a + b;
+  unsafe { std::hint::assert_unchecked(b < c); }
 }
 \end{lstlisting}
-The behavior of this program is not uniquely defined by the C
-language. Specifically, C's integer types, such as \lstinline!int!, support only
-a finite range of integers, and furthermore the C language does
-not specify the bounds of this range. The bounds are
-\emph{implementation-dependent}. The C language does specify
-that the minimum and maximum value of type \lstinline!int! are
-given by the macros \lstinline!INT_MIN! and \lstinline!INT_MAX! defined in header \verb|limits.h|, and that \lstinline!INT_MIN!
-is not greater than $-32768$ and that \lstinline|INT_MAX| is not less than 32767. On a modern desktop or server platform, where \lstinline|INT_MAX| equals $2^{31}-1$ (more than $2\times10^9$), the value of variable \lstinline|c| is 60000, and this program returns 1, but on platforms where \lstinline|INT_MAX| equals 32767, such as embedded platforms based on the AVR microcontroller, the mathematical result of the addition is outside the limits of type \lstinline|int| and this program has \emph{undefined behavior}; indeed, the C language specification allows compilers to perform optimizations that assume that arithmetic operations on (signed) integers never overflow, so compilers are allowed to miscompile the example program in arbitrary ways.
+The addition in function \lstinline|main| performs arithmetic overflow: the mathematical result of the addition is outside the limits of the type. Rust considers arithmetic overflow to be an error: in a debug build, the addition panics. (In a release build, the addition wraps around; in this example, this leads to undefined behavior due to the failure of the subsequent unchecked assert.)
 
-VeriFast assumes that for each signed integer type $T$, $T$\texttt{\_MIN}${} = -2^{8\times\texttt{sizeof($T$)} - 1}$ and $\texttt{$T$\_MAX} = 2^{8\times\texttt{sizeof($T$)} - 1} - 1$, and for each unsigned integer type $T$, $\texttt{$T$\_MAX} = 2^{8\times\texttt{sizeof($T$)}} - 1$. Furthermore, it treats \lstinline!char! as a synonym of \lstinline!signed char! and \lstinline!size_t! as a synonym of \lstinline!uintptr_t! and it currently supports the following target platforms\footnote{VeriFast supports \texttt{32bit} as a synonym for \texttt{ILP32}, \texttt{Win64} as a synonym for \texttt{LLP64}, and \texttt{Unix64}, \texttt{Linux64}, \texttt{OSX}, and \texttt{MacOS} as synonyms for \texttt{LP64}.}, given with the value of \texttt{sizeof($T$)} for various types $T$:
+VeriFast, too, reports arithmetic overflow as an error by default. Indeed, it does not accept the example program. Sometimes, however, it is useful to postpone worrying about arithmetic overflows; for that reason, VeriFast offers the option to disable the \emph{Check arithmetic overflow} setting in the Verify menu. Be aware, however, that this may lead to unsoundness: with this setting disabled, VeriFast simply assumes that no arithmetic overflow occurs and accepts the example program, even though it has undefined behavior.
 
-\begin{center}
-\begin{tabular}{ |c|c|c|c|c|c|c| }
- \hline
- Target & \texttt{short} & \texttt{int} & \texttt{long} & \texttt{size\_t} & \texttt{long long} \\ 
- \hline
- \verb|IP16| & 2 & 2 & 4 & 2 & 8 \\ 
- \verb|I16| & 2 & 2 & 4 & 4 & 8 \\
- \verb|ILP32| & 2 & 4 & 4 & 4 & 8 \\ 
- \verb|LLP64| & 2 & 4 & 4 & 8 & 8 \\
- \verb|LP64| & 2 & 4 & 8 & 8 & 8 \\
- \hline
-\end{tabular}
-\end{center}
+Note that for the Rust types \lstinline|usize| and \lstinline|isize|, the limits depend on the compiler's target architecture. VeriFast assumes the same limits that the Rust compiler uses: when verifying a program on a 64-bit machine, VeriFast assumes that \lstinline|usize| and \lstinline|isize| are 64 bits wide.
 
-By default, VeriFast verifies the program in a way that is intended to be sound with respect to all of these targets (but not necessarily with respect to other targets allowed by the C standard). If you are only targeting one of these platforms, specify it using the \texttt{-target} command-line option.
-
-By default, VeriFast considers arithmetic overflow to be an error. Therefore, symbolic execution of the addition in the above program fails, unless the \texttt{-target} command-line option is used to specify a target where $\texttt{sizeof(int)} > 2$, or VeriFast is told to assume arithmetic overflow never happens using the \verb|-disable_overflow_check| option. If the program performs arithmetic overflow intentionally in order to cause modulo behavior (also known as \emph{wraparound behavior}, which means that if the mathematical result of the operation is outside the limits of the type, the expression evaluates to a value obtained by adding or subtracting $2^{8\times\texttt{sizeof($T$)}}$ to the mathematical result as many times as necessary to bring it within the limits of the type), this can be indicating by writing \lstinline|/*@truncating@*/ (a + b)|. Note: in the case of signed integer types, truncating expressions are allowed only if \verb|-fwrapv| is specified on the command line; indeed, as mentioned above, absent this compiler flag signed integer overflow is undefined behavior.
-
-As another example, consider the following function:
+Now, consider the following function:
 \begin{lstlisting}
-void int_add(int *x, int *y)
-    //@ requires integer(x, ?vx) &*& integer(y, ?vy);
-    //@ ensures integer(x, vx + vy) &*& integer(y, vy);
+unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
+//@ req points_to(x, ?vx) &*& points_to(y, ?vy);
+//@ ens points_to(x, vx) &*& points_to(y, vy) &*& result == vx + vy;
 {
-    int xv = *x;
-    int yv = *y;
-    *x = xv + yv;
+    let xv = *x;
+    let yv = *y;
+    xv + yv
 }
 \end{lstlisting}
-This function has undefined behavior and is rejected by VeriFast. (Note: inside annotations, arithmetic operations are interpreted mathematically, so the expression \verb|vx + vy| in the \verb|ensures| clause has the mathematical meaning regardless of the C type of this expression; it follows that the values of expressions inside annotations are not necessarily within the limits of their C type.)
+This function performs arithmetic overflow and is rejected by VeriFast. (Note: inside annotations, arithmetic operations are interpreted mathematically, so the expression \verb|vx + vy| in the \verb|ens| clause has the mathematical meaning regardless of the Rust type of this expression; it follows that the values of expressions inside annotations are not necessarily within the limits of their Rust type.)
 
 Let's try to fix this function. Here's a first attempt:
 \begin{lstlisting}
-#include "stdlib.h"
-void int_add(int *x, int *y)
-    //@ requires integer(x, ?vx) &*& integer(y, ?vy);
-    //@ ensures integer(x, vx + vy) &*& integer(y, vy);
+unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
+//@ req points_to(x, ?vx) &*& points_to(y, ?vy);
+//@ ens points_to(x, vx) &*& points_to(y, vy) &*& result == vx + vy;
 {
-    int xv = *x;
-    int yv = *y;
-    if (0 <= xv) {
-        if (INT_MAX - xv < yv) abort();
+    let xv = *x;
+    let yv = *y;
+    if 0 <= xv {
+        if i16::MAX - xv < yv {
+            std::process::abort();
+        }
     } else {
-        if (yv < INT_MIN - xv) abort();
+        if yv < i16::MIN - xv {
+            std::process::abort();
+        }
     }
-    *x = xv + yv;
+    xv + yv
 }
 \end{lstlisting}
 Even though this function is now correct,
@@ -1876,56 +1861,50 @@ values are within the bounds of the type. These assumptions are
 not generated automatically in general. In order to generate these assumptions, we must insert
 \lstinline!produce_limits! ghost commands into the code. The
 argument of a \lstinline!produce_limits! command must be the
-name of a C local variable (i.e., not a local variable declared
+name of a Rust local variable (i.e., not a local variable declared
 in an annotation). The following program verifies.
 \begin{lstlisting}
-#include "stdlib.h"
-void int_add(int *x, int *y)
-    //@ requires integer(x, ?vx) &*& integer(y, ?vy);
-    //@ ensures integer(x, vx + vy) &*& integer(y, vy);
+unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
+//@ req points_to(x, ?vx) &*& points_to(y, ?vy);
+//@ ens points_to(x, vx) &*& points_to(y, vy) &*& result == vx + vy;
 {
-    int xv = *x;
+    let xv = *x;
+    let yv = *y;
     //@ produce_limits(xv);
-    int yv = *y;
     //@ produce_limits(yv);
-    if (0 <= xv) {
-        if (INT_MAX - xv < yv) abort();
+    if 0 <= xv {
+        if i16::MAX - xv < yv {
+            std::process::abort();
+        }
     } else {
-        if (yv < INT_MIN - xv) abort();
+        if yv < i16::MIN - xv {
+            std::process::abort();
+        }
     }
-    *x = xv + yv;
+    xv + yv
 }
 \end{lstlisting}
 
-Note: The above overflow-checked integer addition
-implementation is probably not the most optimal one in terms of
-performance. For example, the x86 instruction set includes the
-INTO (Interrupt on Overflow) instruction, which causes a
-software interrupt if the overflow flag is set. An
-implementation that uses this instruction is likely to perform
-much better.
-
-Note: in case an \lstinline!integer!, \lstinline!character! or
-\lstinline!pointer! chunk is on the heap, one can also use
-the lemmas \lstinline!integer_limits!, \lstinline!character_limits!
-and \lstinline!pointer_limits! respectively. The contracts
-of these lemmas can be found in the file \texttt{prelude.h}.
+Note: this is a contrived example; in reality, one should of course use Rust's \lstinline|i16::checked_add| method instead.
 
 Also, the limits of the values of variables \emph{are} produced automatically if the points-to syntax is used to assert the chunks. The following verifies:
 \begin{lstlisting}
-#include "stdlib.h"
-void int_add(int *x, int *y)
-    //@ requires *x |-> ?vx &*& *y |-> ?vy;
-    //@ ensures *x |-> vx + vy &*& *y |-> vy;
+unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
+//@ req *x |-> ?vx &*& *y |-> ?vy;
+//@ ens *x |-> vx &*& *y |-> vy &*& result == vx + vy;
 {
-    int xv = *x;
-    int yv = *y;
-    if (0 <= xv) {
-        if (INT_MAX - xv < yv) abort();
+    let xv = *x;
+    let yv = *y;
+    if 0 <= xv {
+        if i16::MAX - xv < yv {
+            std::process::abort();
+        }
     } else {
-        if (yv < INT_MIN - xv) abort();
+        if yv < i16::MIN - xv {
+            std::process::abort();
+        }
     }
-    *x = xv + yv;
+    xv + yv
 }
 \end{lstlisting}
 
