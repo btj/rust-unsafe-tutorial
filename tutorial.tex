@@ -1908,221 +1908,179 @@ unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
 }
 \end{lstlisting}
 
-\section{Predicate Families}\label{section:predicate-families}
+\section{Parameterized Function Types}\label{section:predicate-families}
 
-Let's go back to the \lstinline!stack_filter! function from
+Let's go back to the \lstinline!Stack::filter! function from
 Section~\ref{section:function-pointers}. Suppose we want to
 remove all occurrences of some user-provided value from the
 stack:
 \begin{lstlisting}
-typedef bool int_predicate(void *data, int x);
+type I32Predicate = unsafe fn(data: *mut u8, i32) -> bool;
 
-struct node *nodes_filter(struct node *n, int_predicate *p, void *data)
-{
-    if (n == 0) {
-        return 0;
+unsafe fn filter_nodes(n: *mut Node, p: I32Predicate, data: *mut u8) -> *mut Node {
+    if n.is_null() {
+        std::ptr::null_mut()
     } else {
-        bool keep = p(data, n->value);
-        if (keep) {
-            struct node *next = nodes_filter(n->next, p, data);
-            n->next = next;
-            return n;
+        let keep = p(data, (*n).value);
+        if keep {
+            let next = filter_nodes((*n).next, p, data);
+            (*n).next = next;
+            n
         } else {
-            struct node *next = n->next;
-            free(n);
-            struct node *result = nodes_filter(next, p, data);
-            return result;
+            let next = (*n).next;
+            dealloc(n as *mut u8, Layout::new::<Node>());
+            let result = filter_nodes(next, p, data);
+            result
         }
     }
 }
 
-void stack_filter(struct stack *stack, int_predicate *p, void *data)
-{
-    struct node *head = nodes_filter(stack->head, p, data);
-    stack->head = head;
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate, data: *mut u8) {
+        let head = filter_nodes((*stack).head, p, data);
+        (*stack).head = head;
+    }
 }
 
-struct neq_a_data {
-    int a;
-};
-
-bool neq_a(struct neq_a_data *data, int x)
+unsafe fn neq_a(data: *mut u8, x: i32) -> bool
 {
-    bool result = x != data->a;
-    return result;
+    let result = x != *(data as *mut i32);
+    result
 }
 
-int read_int();
-
-int main()
+unsafe fn read_i32() -> i32
+//@ req true;
+//@ ens true;
+//@ assume_correct
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
-    int a = read_int();
-    struct neq_a_data *data = malloc(sizeof(struct neq_a_data));
-    if (data == 0) abort();
-    data->a = a;
-    stack_filter(s, neq_a, data);
-    free(data);
-    stack_dispose(s);
-    return 0;
-}
-\end{lstlisting}
-
-How do we specify the stack module? Here's an attempt:
-\begin{lstlisting}
-//@ predicate int_predicate_data(void *data) = ??
-
-typedef bool int_predicate(void *data, int x);
-    //@ requires int_predicate_data(data);
-    //@ ensures int_predicate_data(data);
-
-struct node *nodes_filter(struct node *n, int_predicate *p, void *data)
-    //@ requires nodes(n, _) &*& is_int_predicate(p) == true &*& int_predicate_data(data);
-    //@ ensures nodes(result, _) &*& int_predicate_data(data);
-{ ... }
-
-void stack_filter(struct stack *stack, int_predicate *p, void *data)
-    //@ requires stack(stack, _) &*& is_int_predicate(p) == true &*& int_predicate_data(data);
-    //@ ensures stack(stack, _) &*& int_predicate_data(data);
-{ ... }
-\end{lstlisting}
-
-The problem is in the definition of predicate
-\lstinline!int_predicate_data!. There is no way for the stack
-module to predict what data structure the \lstinline!data!
-pointer points to. If we allow the client to choose the
-definition of the predicate, we can verify the client easily:
-\begin{lstlisting}
-//@ predicate int_predicate_data(void *data) = neq_a_data_a(data, _);
-
-bool neq_a(struct neq_a_data *data, int x) //@ : int_predicate
-    //@ requires int_predicate_data(data);
-    //@ ensures int_predicate_data(data);
-{
-    //@ open int_predicate_data(data);
-    bool result = x != data->a;
-    //@ close int_predicate_data(data);
-    return result;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    line.parse().unwrap()
 }
 
-int read_int();
-    //@ requires true;
-    //@ ensures true;
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
-    int a = read_int();
-    struct neq_a_data *data = malloc(sizeof(struct neq_a_data));
-    if (data == 0) abort();
-    data->a = a;
-    //@ close int_predicate_data(data);
-    stack_filter(s, neq_a, data);
-    //@ open int_predicate_data(data);
-    free(data);
-    stack_dispose(s);
-    return 0;
+fn main() {
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        let mut a = read_i32();
+        Stack::filter(s, neq_a, &raw mut a as *mut u8);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
-However, this clearly is not feasible. After all, if our stack
-module has more than one client, we will have multiple
-definitions for the same predicate. Specifically, we will have
-one definition of \lstinline!int_predicate_data! for each
-function of type \lstinline!int_predicate!. The problem would
-be solved if we could refer specifically to the definition of
-\lstinline!int_predicate_data! corresponding to a given
-function of type \lstinline!int_predicate!. This is exactly
-what \emph{predicate families} enable. A predicate family is
-like an ordinary predicate, except that you can have multiple
-definitions, provided that each definition is associated with a
-distinct \emph{index}. Predicate family indices must be
-function pointers.
-
-If we apply predicate families, we get the following
-specification for the stack module:
+How do we adapt the proof? Here's an attempt:
 \begin{lstlisting}
-//@ predicate_family int_predicate_data(void *p)(void *data);
-
-typedef bool int_predicate(void *data, int x);
-    //@ requires int_predicate_data(this)(data);
-    //@ ensures int_predicate_data(this)(data);
-
-struct node *nodes_filter(struct node *n, int_predicate *p, void *data)
-    //@ requires nodes(n, _) &*& is_int_predicate(p) == true &*& int_predicate_data(p)(data);
-    //@ ensures nodes(result, _) &*& int_predicate_data(p)(data);
-
-void stack_filter(struct stack *stack, int_predicate *p, void *data)
-    //@ requires stack(stack, _) &*& is_int_predicate(p) == true &*& int_predicate_data(p)(data);
-    //@ ensures stack(stack, _) &*& int_predicate_data(p)(data);
-\end{lstlisting}
-Notice that inside the contract of a function type, you can
-refer to the function pointer as \lstinline!this!.
-
-The client can be verified as follows:
-\begin{lstlisting}
-struct neq_a_data {
-    int a;
-};
-
 /*@
-predicate_family_instance int_predicate_data(neq_a)(void *data) =
-    neq_a_data_a(data, _);
+
+pred neq_a_data(data: *mut u8) = *(data as *mut i32) |-> ?_;
+
+fn_type I32Predicate() = unsafe fn(data: *mut u8, x: i32) -> bool;
+    req neq_a_data(data);
+    ens neq_a_data(data);
+
 @*/
 
-bool neq_a(struct neq_a_data *data, int x) //@ : int_predicate
-    //@ requires int_predicate_data(neq_a)(data);
-    //@ ensures int_predicate_data(neq_a)(data);
-{
-    //@ open int_predicate_data(neq_a)(data);
-    bool result = x != data->a;
-    //@ close int_predicate_data(neq_a)(data);
-    return result;
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate, data: *mut u8)
+    //@ req Stack(stack, _) &*& [_]is_I32Predicate(p) &*& neq_a_data(data);
+    //@ ens Stack(stack, _) &*& neq_a_data(data);
+    { ... }
 }
 
-int read_int();
-    //@ requires true;
-    //@ ensures true;
-
-int main()
-    //@ requires true;
-    //@ ensures true;
+unsafe fn neq_a(data: *mut u8, x: i32) -> bool
+//@ req neq_a_data(data);
+//@ ens neq_a_data(data);
 {
-    struct stack *s = create_stack();
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
-    int a = read_int();
-    struct neq_a_data *data = malloc(sizeof(struct neq_a_data));
-    if (data == 0) abort();
-    data->a = a;
-    //@ close int_predicate_data(neq_a)(data);
-    stack_filter(s, neq_a, data);
-    //@ open int_predicate_data(neq_a)(data);
-    free(data);
-    stack_dispose(s);
-    return 0;
+    //@ open neq_a_data(data);
+    let result = x != *(data as *mut i32);
+    //@ close neq_a_data(data);
+    result
+}
+
+fn main()
+//@ req true;
+//@ ens true;
+{
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        let mut a = read_i32();
+        /*@
+        produce_fn_ptr_chunk I32Predicate(neq_a)()(data, x) {
+            call();
+        }
+        @*/
+        //@ close neq_a_data(&a as *mut u8);
+        Stack::filter(s, neq_a, &raw mut a as *mut u8);
+        //@ open neq_a_data(&a as *mut u8);
+        Stack::dispose(s);
+    }
+}
+\end{lstlisting}
+
+This proof goes through, but it is not modular: the proof of the stack module depends on the \lstinline|neq_a_data|
+predicate which is specific to the particular client program.
+
+The solution is to \emph{parameterize} the \lstinline|I32Predicate| VeriFast function type by the predicate
+that describes the data, by declaring a \emph{function type parameter} \lstinline|data_pred| between the first set of parentheses:
+\begin{lstlisting}
+/*@
+fn_type I32Predicate(data_pred: pred(*mut u8)) = unsafe fn(data: *mut u8, x: i32) -> bool;
+    req data_pred(data);
+    ens data_pred(data);
+@*/
+\end{lstlisting}
+Correspondingly, we need to pass an argument for this function type parameter as an extra argument to the \lstinline|is_I32Predicate| function type chunk:
+\begin{lstlisting}
+unsafe fn filter_nodes(n: *mut Node, p: I32Predicate, data: *mut u8) -> *mut Node
+//@ req Nodes(n, _) &*& [_]is_I32Predicate(p, ?data_pred) &*& data_pred(data);
+//@ ens Nodes(result, _) &*& data_pred(data);
+{ ... }
+
+impl Stack {
+    unsafe fn filter(stack: *mut Stack, p: I32Predicate, data: *mut u8)
+    //@ req Stack(stack, _) &*& [_]is_I32Predicate(p, ?data_pred) &*& data_pred(data);
+    //@ ens Stack(stack, _) &*& data_pred(data);
+    { ... }
+}
+\end{lstlisting}
+And we need to specify an argument for each of a VeriFast function type's parameters between the second set of parentheses of the \lstinline|produce_fn_ptr_chunk| ghost command:
+\begin{lstlisting}
+fn main()
+//@ req true;
+//@ ens true;
+{
+    unsafe {
+        let s = Stack::create();
+        Stack::push(s, 10);
+        Stack::push(s, 20);
+        let mut a = read_i32();
+        /*@
+        produce_fn_ptr_chunk I32Predicate(neq_a)(neq_a_data)(data, x) {
+            call();
+        }
+        @*/
+        //@ close neq_a_data(&a as *mut u8);
+        Stack::filter(s, neq_a, &raw mut a as *mut u8);
+        //@ open neq_a_data(&a as *mut u8);
+        Stack::dispose(s);
+    }
 }
 \end{lstlisting}
 
 \begin{exercise}\label{exercise:map}
-Add a function \lstinline!stack_map! that takes a function $f$
-that takes an int and returns an int. \lstinline!stack_map!
+Add a function \lstinline!Stack::map! that takes a function $f$
+that takes an \lstinline|i32| and returns an \lstinline|i32|. \lstinline!Stack::map!
 replaces the value of each element of the stack with the result
 of applying $f$ to it.
 
 Write a client program that creates a stack containing the
 values 10, 20, 30; then reads a value from the user; and then
 adds this value to each element of the stack using
-\lstinline!stack_map!. Verify the memory safety of the
+\lstinline!Stack::map!. Verify the memory safety of the
 resulting program.
 \end{exercise}
 
@@ -5513,35 +5471,39 @@ unsafe fn filter_nodes(n: *mut *mut Node, p: I32Predicate)
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:map}:
-map.c}\label{solution:map}
+map.rs}\label{solution:map}
 
 \begin{lstlisting}
-//@ predicate_family int_func_data(void *f)(void *data);
+/*@
+fn_type I32Func(data_pred: pred(*mut u8)) = unsafe fn(data: *mut u8, x: i32) -> i32;
+    req data_pred(data);
+    ens data_pred(data);
+@*/
 
-typedef int int_func(void *data, int x);
-    //@ requires int_func_data(this)(data);
-    //@ ensures int_func_data(this)(data);
+type I32Func = unsafe fn(*mut u8, i32) -> i32;
 
-void nodes_map(struct node *n, int_func *f, void *data)
-    //@ requires nodes(n, ?count) &*& is_int_func(f) == true &*& int_func_data(f)(data);
-    //@ ensures nodes(n, count) &*& is_int_func(f) == true &*& int_func_data(f)(data);
+unsafe fn map_nodes(n: *mut Node, f: I32Func, data: *mut u8)
+//@ req Nodes(n, ?count) &*& [_]is_I32Func(f, ?data_pred) &*& data_pred(data);
+//@ ens Nodes(n, count) &*& data_pred(data);
 {
-    //@ open nodes(n, _);
-    if (n != 0) {
-        int y = f(data, n->value);
-        n->value = y;
-        nodes_map(n->next, f, data);
+    //@ open Nodes(n, _);
+    if !n.is_null() {
+        let y = f(data, (*n).value);
+        (*n).value = y;
+        map_nodes((*n).next, f, data);
     }
-    //@ close nodes(n, count);
+    //@ close Nodes(n, count);
 }
 
-void stack_map(struct stack *stack, int_func *f, void *data)
-    //@ requires stack(stack, ?count) &*& is_int_func(f) == true &*& int_func_data(f)(data);
-    //@ ensures stack(stack, count) &*& is_int_func(f) == true &*& int_func_data(f)(data);
-{
-    //@ open stack(stack, _);
-    nodes_map(stack->head, f, data);
-    //@ close stack(stack, count);
+impl Stack {
+    unsafe fn map(stack: *mut Stack, f: I32Func, data: *mut u8)
+    //@ req Stack(stack, ?count) &*& [_]is_I32Func(f, ?data_pred) &*& data_pred(data);
+    //@ ens Stack(stack, count) &*& data_pred(data);
+    {
+        //@ open Stack(stack, _);
+        map_nodes((*stack).head, f, data);
+        //@ close Stack(stack, count);
+    }
 }
 \end{lstlisting}
 
