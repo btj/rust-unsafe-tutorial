@@ -2088,37 +2088,37 @@ resulting program.
 
 Consider the solution to Exercise~\ref{exercise:reverse}, where
 we verified full functional correctness of a
-\lstinline!stack_reverse! function for a stack of integers. We
-used an \lstinline!ints! inductive datatype, fixpoint functions
-\lstinline!append! and \lstinline!reverse!, and lemmas
-\lstinline!append_nil! and \lstinline!append_assoc!. Suppose,
+\lstinline!Stack::reverse! function for a stack of integers. We
+used an \lstinline!i32s! inductive datatype, fixpoint functions
+\lstinline!i32s_append! and \lstinline!i32s_reverse!, and lemmas
+\lstinline!i32s_append_nil_lemma! and \lstinline!i32s_append_assoc_lemma!. Suppose,
 now, that we need the same functionality for a stack of
-pointers. Clearly, since C does not support generics, we will
-need to copy-paste the C code and replace \lstinline!int! with
-\lstinline!void *! throughout. However, fortunately, VeriFast
-does support generics for inductive datatypes, fixpoint
-functions, lemmas, and predicates, so instead of copy-pasting
-all of these, we can parameterize them by the element type.
-Here are parameterized versions of \lstinline!ints!,
-\lstinline!append!, and \lstinline!append_nil!:
+pointers. For the Rust structs and functions, the solution is of course to apply
+Rust's generics support: we make the structs and functions generic in the element type.
+But what about the VeriFast constructs? Fortunately, VeriFast, too,
+supports generics: inductive datatypes, fixpoint
+functions, lemmas, and predicates can all be parameterized.
+Here are parameterized versions of \lstinline!i32s!,
+\lstinline!i32s_append!, and \lstinline!i32s_append_nil_lemma!:
 \begin{lstlisting}
 inductive list<t> = nil | cons(t, list<t>);
 
-fixpoint list<t> append<t>(list<t> xs, list<t> ys) {
-    switch (xs) {
-        case nil: return ys;
-        case cons(x, xs0): return cons<t>(x, append<t>(xs0, ys));
+fix append<t>(xs: list<t>, ys: list<t>) -> list<t> {
+    match xs {
+        nil => ys,
+        cons(x, xs0) => cons(x, append(xs0, ys))
     }
 }
 
-lemma void append_nil<t>(list<t> xs)
-    requires true;
-    ensures append<t>(xs, nil<t>) == xs;
+lem append_nil<t>(xs: list<t>)
+    req true;
+    ens append(xs, nil) == xs;
 {
-    switch (xs) {
-        case nil:
-        case cons(x, xs0):
-            append_nil<t>(xs0);
+    match xs {
+        nil => {}
+        cons(x, xs0) => {
+            append_nil(xs0);
+        }
     }
 }
 \end{lstlisting}
@@ -2132,79 +2132,72 @@ constructor of a type-parameterized datatype, is mentioned, a
 \emph{type argument list} has to be supplied, which is a list
 of types enclosed in angle brackets.
 
-Here's what predicates \lstinline!nodes! and \lstinline!stack!
-and function \lstinline!stack_reverse! look like for stacks of
-pointers:
+Here's what generic predicates \lstinline!Nodes! and \lstinline!Stack!
+and function \lstinline!Stack::reverse! look like:
 \begin{lstlisting}
-predicate nodes(struct node *node, list<void *> values) =
-    node == 0 ?
-        values == nil<void *>
-    :
-        node->next |-> ?next &*& node->value |-> ?value &*& malloc_block_node(node) &*&
-        nodes(next, ?values0) &*& values == cons<void *>(value, values0);
+pred Nodes<T>(node: *mut Node<T>, values: list<T>) =
+    if node == 0 {
+        values == nil
+    } else {
+        (*node).next |-> ?next &*& (*node).value |-> ?value &*&
+        alloc_block_Node(node) &*& Nodes(next, ?values0) &*&
+        values == cons(value, values0)
+    };
 
-predicate stack(struct stack *stack, list<void *> values) =
-    stack->head |-> ?head &*& malloc_block_stack(stack) &*& nodes(head, values);
+pred Stack<T>(stack: *mut Stack<T>, values: list<T>) =
+    (*stack).head |-> ?head &*& alloc_block_Stack(stack) &*& Nodes(head, values);
 
-void stack_reverse(struct stack *stack)
-    //@ requires stack(stack, ?values);
-    //@ ensures stack(stack, reverse<void *>(values));
-{
-    //@ open stack(stack, values);
-    struct node *n = stack->head;
-    struct node *m = 0;
-    //@ close nodes(m, nil<void *>);
-    //@ append_nil<void *>(reverse<void *>(values));
-    while (n != 0)
-        /*@
-        invariant
-            nodes(m, ?values1) &*& nodes(n, ?values2) &*&
-            reverse<void *>(values) == append<void *>(reverse<void *>(values2), values1);
-        @*/
+impl Stack {
+    unsafe fn reverse(stack: *mut Stack<T>)
+    //@ req Stack(stack, ?values);
+    //@ ens Stack(stack, reverse(values));
     {
-        //@ open nodes(n, values2);
-        struct node *next = n->next;
-        //@ assert nodes(next, ?values2tail) &*& n->value |-> ?value;
-        n->next = m;
-        m = n;
-        n = next;
-        //@ close nodes(m, cons<void *>(value, values1));
-        //@ append_assoc<void *>(reverse<void *>(values2tail), cons<void *>(value, nil<void *>), values1);
+        //@ open Stack(stack, values);
+        let mut n = (*stack).head;
+        let mut m = std::ptr::null_mut();
+        //@ close Nodes(m, nil);
+        //@ append_nil(reverse(values));
+        loop {
+            //@ inv Nodes(m, ?values1) &*& Nodes(n, ?values2) &*& reverse(values) == append(reverse(values2), values1);
+            //@ open Nodes(n, values2);
+            if n.is_null() {
+                break;
+            }
+            let next = (*n).next;
+            //@ assert Nodes(next, ?values2tail) &*& (*n).value |-> ?value;
+            (*n).next = m;
+            m = n;
+            n = next;
+            //@ close Nodes(m, cons(value, values1));
+            //@ append_assoc(reverse(values2tail), cons(value, nil), values1);
+        }
+        (*stack).head = m;
+        //@ close Stack(stack, reverse(values));
     }
-    //@ open nodes(n, _);
-    stack->head = m;
-    //@ close stack(stack, reverse<void *>(values));
 }
 \end{lstlisting}
 
-Thanks to generics, we can now re-use the same datatypes,
-fixpoints, and lemmas for both stacks of ints and stacks of
-pointers. However, this approach does seem to introduce a lot
-of syntactic overhead, considering how we need to insert type
-argument lists everywhere. Fortunately, VeriFast performs
-\emph{type argument inference}. If VeriFast encounters an
+Just like Rust does, VeriFast performs
+\emph{type argument inference}, so that most of the time you need not explicitly write type arguments when applying a generic VeriFast construct. If VeriFast encounters an
 occurrence of a type-parameterized entity in an expression and
 no type argument list was specified, VeriFast will infer the
 type argument list. Since VeriFast's type system has no
 subtyping, a simple unification-based inference approach is
 sufficient. The result is that you almost never have to supply
-type argument lists in expressions explicitly. Specifically, in
-the example, all type argument lists in expressions can be
-omitted. Note: VeriFast does not infer type argument lists in
+type argument lists in expressions explicitly. Note: just like Rust, VeriFast does not infer type argument lists in
 types; that is, when you mention a type-parameterized inductive
 datatype, you must always supply the type arguments explicitly.
 
 Of course, the \lstinline!list! datatype is useful much more
 generally than just for stacks of integers and stacks of
 pointers. In fact, verification of any non-trivial program will
-require the use of lists. For this reason, VeriFast comes with
-a header file \verb|list.h| that includes the list datatype,
+require the use of lists. For this reason, VeriFast's prelude
+includes a file \verb|list.rsspec| that defines the list datatype,
 all of the fixpoints and lemmas used in the example, and many
-more. This header file is implicitly included in each file that
-is verified by VeriFast, so you do not need to include it
-explicitly. Note: This also means that you cannot define your
+more. All definitions in the VeriFast prelude are implicitly available to each file that
+is verified by VeriFast. Note: This also means that you cannot define your
 own versions of \lstinline!nil!, \lstinline!cons!, or other
-elements provided by \verb|list.h|, since this would result in
+elements provided by \verb|list.rsspec|, since this would result in
 a name clash.
 
 \section{Predicate Values}\label{section:predvals}
