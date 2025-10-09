@@ -2202,7 +2202,7 @@ a name clash.
 
 \section{Predicate Values}\label{section:predvals}
 
-In the previous section, we obtained a stack of pointers. In
+In the previous section, we obtained a generic stack. In
 this section, we will use this stack to keep track of a
 collection of objects.
 
@@ -2213,79 +2213,85 @@ top two vectors with their sum, and pop the top vector to print
 it.
 
 \begin{lstlisting}
-struct vector {
-    int x;
-    int y;
-};
-
-struct vector *create_vector(int x, int y)
-{
-    struct vector *result = malloc(sizeof(struct vector));
-    if (result == 0) abort();
-    result->x = x;
-    result->y = y;
-    return result;
+struct Vector {
+    x: i32,
+    y: i32,
 }
 
-int main()
-{
-    struct stack *s = create_stack();
-    while (true)
-    {
-        char c = input_char();
-        if (c == 'p') {
-            int x = input_int();
-            int y = input_int();
-            struct vector *v = create_vector(x, y);
-            stack_push(s, v);
-        } else if (c == '+') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v1 = stack_pop(s);
-            empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v2 = stack_pop(s);
-            struct vector *sum = create_vector(v1->x + v2->x, v1->y + v2->y);
-            free(v1);
-            free(v2);
-            stack_push(s, sum);
-        } else if (c == '=') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v = stack_pop(s);
-            output_int(v->x);
-            output_int(v->y);
-            free(v);
-        } else {
-            abort();
+impl Vector {
+    unsafe fn create(x: i32, y: i32) -> *mut Vector {
+        let result = alloc(Layout::new::<Vector>()) as *mut Vector;
+        if result.is_null() {
+            handle_alloc_error(Layout::new::<Vector>());
+        }
+        (*result).x = x;
+        (*result).y = y;
+        result
+    }
+}
+
+fn main() {
+    unsafe {
+        let s = Stack::create();
+        loop {
+            let cmd = input_char();
+            match cmd {
+                'p' => {
+                    let x = input_i32();
+                    let y = input_i32();
+                    let v = Vector::create(x, y);
+                    Stack::push(s, v);
+                }
+                '+' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v1 = Stack::pop(s);
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v2 = Stack::pop(s);
+                    let sum = Vector::create((*v1).x + (*v2).x, (*v1).y + (*v2).y);
+                    dealloc(v1 as *mut u8, Layout::new::<Vector>());
+                    dealloc(v2 as *mut u8, Layout::new::<Vector>());
+                    Stack::push(s, sum);
+                }
+                '=' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v_ = Stack::pop(s);
+                    output_i32((*v_).x);
+                    output_i32((*v_).y);
+                    dealloc(v_ as *mut u8, Layout::new::<Vector>());
+                }
+                _ => panic!("Bad command")
+            }
         }
     }
 }
 \end{lstlisting}
 
-The specification of \lstinline!create_vector! is easy:
+The specification of \lstinline!Vector::create! is easy:
 
 \begin{lstlisting}
-//@ predicate vector(struct vector *v) = v->x |-> _ &*& v->y |-> _ &*& malloc_block_vector(v);
+//@ pred Vector(v: *mut Vector) = (*v).x |-> ?x &*& (*v).y |-> ?y &*& alloc_block_Vector(v);
 
-struct vector *create_vector(int x, int y)
-    //@ requires true;
-    //@ ensures vector(result);
+impl Vector {
+    unsafe fn create(x: i32, y: i32) -> *mut Vector
+    //@ req true;
+    //@ ens Vector(result);
+    { ... }
+}
 \end{lstlisting}
 
 The tricky part is the loop invariant for the loop in
 \lstinline!main!. The loop invariant should state that we have
 a stack at \lstinline!s!, and furthermore, that for each
 element of \lstinline!s!, we have a vector. We can express the
-first part using the assertion \lstinline!stack(s, ?values)!,
+first part using the assertion \lstinline!Stack(s, ?values)!,
 and we can easily write a recursive predicate to express the
 second part:
 
 \begin{lstlisting}
-predicate vectors(list<struct vector *> vs) =
-    switch (vs) {
-        case nil: return true;
-        case cons(v, vs0): return vector(v) &*& vectors(vs0);
+pred Vectors(vs: list<*mut Vector>) =
+    match vs {
+        nil => true,
+        cons(v, vs0) => Vector(v) &*& Vectors(vs0)
     };
 \end{lstlisting}
 
@@ -2294,25 +2300,14 @@ to define a new predicate whenever we wish to express that we
 have a given predicate for each element of a list. To address
 this, VeriFast supports \emph{predicate values}. That is, you
 can pass a predicate as an argument to another predicate. This
-allows us to generalize the above \lstinline!vectors! predicate
+allows us to generalize the above \lstinline!Vectors! predicate
 as follows:
 
 \begin{lstlisting}
-predicate foreach(list<void *> vs, predicate(void *) p) =
-    switch (vs) {
-        case nil: return true;
-        case cons(v, vs0): return p(v) &*& foreach(vs0, p);
-    };
-\end{lstlisting}
-
-Using generics, we can even generalize this predicate further,
-to work for lists of arbitrary values:
-
-\begin{lstlisting}
-predicate foreach<t>(list<t> vs, predicate(t) p) =
-    switch (vs) {
-        case nil: return true;
-        case cons(v, vs0): return p(v) &*& foreach(vs0, p);
+pred foreach<t>(xs: list<t>, p: pred(t)) =
+    match xs {
+        nil => true,
+        cons(h, t) => p(h) &*& foreach(t, p)
     };
 \end{lstlisting}
 
@@ -2320,7 +2315,7 @@ Note that type argument inference allows us to omit the type
 argument for the recursive \lstinline!foreach! call.
 
 This predicate is so generally useful that we included it in
-\texttt{list.h}; as a result, it is automatically available in
+\texttt{list.rsspec}; as a result, it is automatically available in
 each file and you do not need to define it yourself.
 
 \begin{exercise}\label{exercise:foreach}
@@ -5501,83 +5496,106 @@ impl Stack {
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:foreach}:
-foreach.c}\label{solution:foreach}
+foreach.rs}\label{solution:foreach}
 
 \begin{lstlisting}
-char input_char();
-    //@ requires true;
-    //@ ensures true;
-
-int input_int();
-    //@ requires true;
-    //@ ensures true;
-
-void output_int(int x);
-    //@ requires true;
-    //@ ensures true;
-
-struct vector {
-    int x;
-    int y;
-};
-
-//@ predicate vector(struct vector *v) = v->x |-> _ &*& v->y |-> _ &*& malloc_block_vector(v);
-
-struct vector *create_vector(int x, int y)
-    //@ requires true;
-    //@ ensures vector(result);
+unsafe fn input_char() -> char
+//@ req true;
+//@ ens true;
+//@ assume_correct
 {
-    struct vector *result = malloc(sizeof(struct vector));
-    if (result == 0) abort();
-    result->x = x;
-    result->y = y;
-    //@ close vector(result);
-    return result;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    line.chars().next().unwrap()
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
+unsafe fn input_i32() -> i32
+//@ req true;
+//@ ens true;
+//@ assume_correct
 {
-    struct stack *s = create_stack();
-    //@ close foreach(nil, vector);
-    while (true)
-        //@ invariant stack(s, ?values) &*& foreach(values, vector);
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    line.trim().parse().unwrap()
+}
+
+unsafe fn output_i32(value: i32)
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    println!("{}", value);
+}
+
+struct Vector {
+    x: i32,
+    y: i32,
+}
+
+//@ pred Vector(v: *mut Vector) = (*v).x |-> ?x &*& (*v).y |-> ?y &*& alloc_block_Vector(v);
+
+impl Vector {
+
+    unsafe fn create(x: i32, y: i32) -> *mut Vector
+    //@ req true;
+    //@ ens Vector(result);
     {
-        char c = input_char();
-        if (c == 'p') {
-            int x = input_int();
-            int y = input_int();
-            struct vector *v = create_vector(x, y);
-            stack_push(s, v);
-            //@ close foreach(cons(v, values), vector);
-        } else if (c == '+') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v1 = stack_pop(s);
-            //@ open foreach(values, vector);
-            //@ open vector(head(values));
-            empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v2 = stack_pop(s);
-            //@ open foreach(tail(values), vector);
-            //@ open vector(head(tail(values)));
-            struct vector *sum = create_vector(v1->x + v2->x, v1->y + v2->y);
-            free(v1);
-            free(v2);
-            stack_push(s, sum);
-            //@ close foreach(cons(sum, tail(tail(values))), vector);
-        } else if (c == '=') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v = stack_pop(s);
-            //@ open foreach(values, vector);
-            //@ open vector(head(values));
-            output_int(v->x);
-            output_int(v->y);
-            free(v);
-        } else {
-            abort();
+        let result = alloc(Layout::new::<Vector>()) as *mut Vector;
+        if result.is_null() {
+            handle_alloc_error(Layout::new::<Vector>());
+        }
+        (*result).x = x;
+        (*result).y = y;
+        //@ close Vector(result);
+        result
+    }
+    
+}
+
+fn main()
+//@ req true;
+//@ ens true;
+{
+    unsafe {
+        let s = Stack::create();
+        //@ close foreach(nil, Vector);
+        loop {
+            //@ inv Stack(s, ?values) &*& foreach(values, Vector);
+            let cmd = input_char();
+            match cmd {
+                'p' => {
+                    let x = input_i32();
+                    let y = input_i32();
+                    let v = Vector::create(x, y);
+                    Stack::push(s, v);
+                    //@ close foreach(cons(v, values), Vector);
+                }
+                '+' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v1 = Stack::pop(s);
+                    //@ open foreach(values, Vector);
+                    //@ open Vector(v1);
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v2 = Stack::pop(s);
+                    //@ open foreach(tail(values), Vector);
+                    //@ open Vector(v2);
+                    let sum = Vector::create((*v1).x + (*v2).x, (*v1).y + (*v2).y);
+                    dealloc(v1 as *mut u8, Layout::new::<Vector>());
+                    dealloc(v2 as *mut u8, Layout::new::<Vector>());
+                    Stack::push(s, sum);
+                    //@ close foreach(cons(sum, tail(tail(values))), Vector);
+                }
+                '=' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v_ = Stack::pop(s);
+                    //@ open foreach(values, Vector);
+                    //@ open Vector(v_);
+                    output_i32((*v_).x);
+                    output_i32((*v_).y);
+                    dealloc(v_ as *mut u8, Layout::new::<Vector>());
+                }
+                _ => panic!("Bad command")
+            }
         }
     }
 }
