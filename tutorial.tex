@@ -2326,51 +2326,52 @@ Verify the program using \lstinline!foreach!.
 
 Let's add a twist to the program of the previous section:
 \begin{lstlisting}
-struct vector *create_vector(int limit, int x, int y)
-{
-    if (x * x + y * y > limit * limit) abort();
-    struct vector *result = malloc(sizeof(struct vector));
-    if (result == 0) abort();
-    result->x = x;
-    result->y = y;
-    return result;
+impl Vector {
+    unsafe fn create(limit: i32, x: i32, y: i32) -> *mut Vector {
+        assert!(x * x + y * y <= limit * limit, "Vector too big");
+        let result = alloc(Layout::new::<Vector>()) as *mut Vector;
+        if result.is_null() {
+            handle_alloc_error(Layout::new::<Vector>());
+        }
+        (*result).x = x;
+        (*result).y = y;
+        result
+    }
 }
 
-int main()
-{
-    int limit = input_int();
-    struct stack *s = create_stack();
-    while (true)
-    {
-        char c = input_char();
-        if (c == 'p') {
-            int x = input_int();
-            int y = input_int();
-            struct vector *v = create_vector(limit, x, y);
-            stack_push(s, v);
-        } else if (c == '+') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v1 = stack_pop(s);
-            empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v2 = stack_pop(s);
-            struct vector *sum = create_vector(limit, v1->x + v2->x, v1->y + v2->y);
-            free(v1);
-            free(v2);
-            stack_push(s, sum);
-        } else if (c == '=') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v = stack_pop(s);
-            int x = v->x;
-            int y = v->y;
-            free(v);
-            assert(x * x + y * y <= limit * limit);
-            output_int(x);
-            output_int(y);
-        } else {
-            abort();
+fn main() {
+    unsafe {
+        let limit = input_i32();
+        let s = Stack::create();
+        loop {
+            let cmd = input_char();
+            match cmd {
+                'p' => {
+                    let x = input_i32();
+                    let y = input_i32();
+                    let v = Vector::create(limit, x, y);
+                    Stack::push(s, v);
+                }
+                '+' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v1 = Stack::pop(s);
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v2 = Stack::pop(s);
+                    let sum = Vector::create(limit, (*v1).x + (*v2).x, (*v1).y + (*v2).y);
+                    dealloc(v1 as *mut u8, Layout::new::<Vector>());
+                    dealloc(v2 as *mut u8, Layout::new::<Vector>());
+                    Stack::push(s, sum);
+                }
+                '=' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v_ = Stack::pop(s);
+                    std::hint::assert_unchecked((*v_).x * (*v_).x + (*v_).y * (*v_).y <= limit * limit);
+                    output_i32((*v_).x);
+                    output_i32((*v_).y);
+                    dealloc(v_ as *mut u8, Layout::new::<Vector>());
+                }
+                _ => panic!("Bad command")
+            }
         }
     }
 }
@@ -2378,12 +2379,12 @@ int main()
 The program now starts by asking the user for a number that
 will serve as a limit on the size of the vectors. When creating
 a vector, the program checks that its size does not exceed the
-limit; otherwise it aborts. When printing a vector, the program
-asserts that the vector satisfies the size limit.
+limit; otherwise it panics. When printing a vector, the program
+performs an unchecked assert that the vector satisfies the size limit.
 
-How do we verify this assert statement?
+How do we verify this assert?
 
-We will need to extend the \lstinline!vector! predicate to
+We will need to extend the \lstinline!Vector! predicate to
 include the information that the vector's size is within the
 limit. However, the limit is a local variable and is not in
 scope in the predicate definition. So we need to pass it as an
@@ -2392,19 +2393,19 @@ additional argument. But then we can no longer use the
 that takes just one parameter. To address this, VeriFies
 supports \emph{partially applied predicates}, in the form of
 \emph{predicate constructors}. To verify the example program,
-we can define a predicate constructor \lstinline!vector! as
+we can define a predicate constructor \lstinline!Vector! as
 follows:
 \begin{lstlisting}
 /*@
-predicate_ctor vector(int limit)(struct vector *v) =
-    v->x |-> ?x &*& v->y |-> ?y &*& malloc_block_vector(v) &*& x * x + y * y <= limit * limit;
+pred_ctor Vector(limit: i32)(v: *mut Vector) =
+    (*v).x |-> ?x &*& (*v).y |-> ?y &*& alloc_block_Vector(v) &*& x * x + y * y <= limit * limit;
 @*/
 \end{lstlisting}
 We can express that for each element of a list
 \lstinline!values! we have a vector that satisfies limit
 \lstinline!limit! as follows:
 \begin{lstlisting}
-foreach(values, vector(limit))
+foreach(values, Vector(limit))
 \end{lstlisting}
 That is, wherever we can use a predicate name, we can also use
 a predicate constructor applied to an argument list. We can do
@@ -5602,79 +5603,86 @@ fn main()
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:predctors}:
-predctors.c}\label{solution:predctors}
+predctors.rs}\label{solution:predctors}
 
 \begin{lstlisting}
-struct vector {
-    int x;
-    int y;
-};
-
-/*@
-predicate_ctor vector(int limit)(struct vector *v) =
-    v->x |-> ?x &*& v->y |-> ?y &*& malloc_block_vector(v) &*& x * x + y * y <= limit * limit;
-@*/
-
-struct vector *create_vector(int limit, int x, int y)
-    //@ requires true;
-    //@ ensures vector(limit)(result);
-{
-    if (x * x + y * y > limit * limit) abort();
-    struct vector *result = malloc(sizeof(struct vector));
-    if (result == 0) abort();
-    result->x = x;
-    result->y = y;
-    //@ close vector(limit)(result);
-    return result;
+struct Vector {
+    x: i32,
+    y: i32,
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    int limit = input_int();
-    struct stack *s = create_stack();
-    //@ close foreach(nil, vector(limit));
-    while (true)
-        //@ invariant stack(s, ?values) &*& foreach(values, vector(limit));
+/*@
+
+pred_ctor Vector(limit: i32)(v: *mut Vector) =
+    (*v).x |-> ?x &*& (*v).y |-> ?y &*& alloc_block_Vector(v) &*& x * x + y * y <= limit * limit;
+
+@*/
+
+impl Vector {
+
+    unsafe fn create(limit: i32, x: i32, y: i32) -> *mut Vector
+    //@ req true;
+    //@ ens Vector(limit)(result);
     {
-        char c = input_char();
-        if (c == 'p') {
-            int x = input_int();
-            int y = input_int();
-            struct vector *v = create_vector(limit, x, y);
-            stack_push(s, v);
-            //@ close foreach(cons(v, values), vector(limit));
-        } else if (c == '+') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v1 = stack_pop(s);
-            //@ open foreach(values, vector(limit));
-            //@ open vector(limit)(head(values));
-            empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v2 = stack_pop(s);
-            //@ open foreach(tail(values), vector(limit));
-            //@ open vector(limit)(head(tail(values)));
-            struct vector *sum = create_vector(limit, v1->x + v2->x, v1->y + v2->y);
-            free(v1);
-            free(v2);
-            stack_push(s, sum);
-            //@ close foreach(cons(sum, tail(tail(values))), vector(limit));
-        } else if (c == '=') {
-            bool empty = stack_is_empty(s);
-            if (empty) abort();
-            struct vector *v = stack_pop(s);
-            //@ open foreach(values, vector(limit));
-            //@ open vector(limit)(head(values));
-            int x = v->x;
-            int y = v->y;
-            free(v);
-            assert(x * x + y * y <= limit * limit);
-            output_int(x);
-            output_int(y);
-        } else {
-            abort();
+        assert!(x * x + y * y <= limit * limit, "Vector too big");
+        let result = alloc(Layout::new::<Vector>()) as *mut Vector;
+        if result.is_null() {
+            handle_alloc_error(Layout::new::<Vector>());
+        }
+        (*result).x = x;
+        (*result).y = y;
+        //@ close Vector(limit)(result);
+        result
+    }
+    
+}
+
+fn main()
+//@ req true;
+//@ ens true;
+{
+    unsafe {
+        let limit = input_i32();
+        let s = Stack::create();
+        //@ close foreach(nil, Vector(limit));
+        loop {
+            //@ inv Stack(s, ?values) &*& foreach(values, Vector(limit));
+            let cmd = input_char();
+            match cmd {
+                'p' => {
+                    let x = input_i32();
+                    let y = input_i32();
+                    let v = Vector::create(limit, x, y);
+                    Stack::push(s, v);
+                    //@ close foreach(cons(v, values), Vector(limit));
+                }
+                '+' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v1 = Stack::pop(s);
+                    //@ open foreach(values, Vector(limit));
+                    //@ open Vector(limit)(v1);
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v2 = Stack::pop(s);
+                    //@ open foreach(tail(values), Vector(limit));
+                    //@ open Vector(limit)(v2);
+                    let sum = Vector::create(limit, (*v1).x + (*v2).x, (*v1).y + (*v2).y);
+                    dealloc(v1 as *mut u8, Layout::new::<Vector>());
+                    dealloc(v2 as *mut u8, Layout::new::<Vector>());
+                    Stack::push(s, sum);
+                    //@ close foreach(cons(sum, tail(tail(values))), Vector(limit));
+                }
+                '=' => {
+                    assert!(!Stack::is_empty(s), "Stack underflow");
+                    let v_ = Stack::pop(s);
+                    //@ open foreach(values, Vector(limit));
+                    //@ open Vector(limit)(v_);
+                    std::hint::assert_unchecked((*v_).x * (*v_).x + (*v_).y * (*v_).y <= limit * limit);
+                    output_i32((*v_).x);
+                    output_i32((*v_).y);
+                    dealloc(v_ as *mut u8, Layout::new::<Vector>());
+                }
+                _ => panic!("Bad command")
+            }
         }
     }
 }
