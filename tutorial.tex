@@ -2628,134 +2628,45 @@ simply leak chunks that you no longer need.
 
 Suppose, now, that we want to adapt the program of the previous
 section as follows: instead of computing just the sum of the
-factorials, we want to compute both the sum of the factorials and
-the product of the factorials. Since our machine has two cores,
+Fibonacci numbers, we want to compute both their sum and
+their product. Since our machine has two cores,
 we want to have two threads: one that computes the sum of the
-factorials of the values of the nodes of the tree, and one that
-computes the product of the factorials of the values of the
-nodes of the tree.
-
-To achieve this, first we generalize our
-\lstinline!tree_compute_sum_facs! function to a
-\lstinline!tree_fold! function that takes the function that it
-should apply to combine the node values as an argument:
-
+Fibonacci numbers of the values of the nodes of the tree, and one that
+computes the product of the Fibonacci numbers of the values of the
+nodes of the tree:
 \begin{lstlisting}
-typedef int fold_function(int acc, int x);
+impl Tree {
+    unsafe fn compute_product_fibs(tree: *mut Tree) -> u64 {
+        if tree.is_null() {
+            1
+        } else {
+            let left_product = Self::compute_product_fibs((*tree).left);
+            let f = wrapping_fib((*tree).value);
+            let right_product = Self::compute_product_fibs((*tree).right);
+            left_product.wrapping_mul(f).wrapping_mul(right_product)
+        }
+    }
+}
 
-int tree_fold(struct tree *tree, fold_function *f, int acc)
-{
-    if (tree == 0) {
-        return acc;
-    } else {
-        acc = tree_fold(tree->left, f, acc);
-        acc = tree_fold(tree->right, f, acc);
-        acc = f(acc, tree->value);
-        return acc;
+fn main() {
+    unsafe {
+        let tree = Tree::make(22);
+        
+        let sum_join_handle = spawn(Tree::compute_sum_fibs, tree);
+        let product_join_handle = spawn(Tree::compute_product_fibs, tree);
+        
+        let sum = join(sum_join_handle);
+        let product = join(product_join_handle);
+        
+        print_u64(sum);
+        print_u64(product);
     }
 }
 \end{lstlisting}
 
-If the elements of the tree $t$ in postfix order are $e_1, e_2,
-e_3, e_4$, then \lstinline!tree_fold!$(t, f, a)$ returns
-$$f(f(f(f(a, e_1), e_2), e_3), e_4)$$
-
-Likewise, we generalize our summator thread to a folder thread:
-
-\begin{lstlisting}
-struct fold_data {
-    struct thread *thread;
-    struct tree *tree;
-    fold_function *f;
-    int acc;
-};
-
-void folder(struct fold_data *data)
-{
-    int acc = tree_fold(data->tree, data->f, data->acc);
-    data->acc = acc;
-}
-
-struct fold_data *start_fold_thread(struct tree *tree, fold_function *f, int acc)
-{
-    struct fold_data *data = malloc(sizeof(struct fold_data));
-    struct thread *t = 0;
-    if (data == 0) abort();
-    data->tree = tree;
-    data->f = f;
-    data->acc = acc;
-    t = thread_start_joinable(folder, data);
-    data->thread = t;
-    return data;
-}
-
-int join_fold_thread(struct fold_data *data)
-{
-    thread_join(data->thread);
-    return data->acc;
-}
-\end{lstlisting}
-
-We can re-implement the program of the previous section using folder threads as follows:
-\begin{lstlisting}
-int sum_function(int acc, int x)
-{
-    int f = fac(x);
-    return acc + f;
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct tree *tree = make_tree(22);
-    //@ open tree(tree, _);
-    struct fold_data *leftData = start_fold_thread(tree->left, sum_function, 0);
-    struct fold_data *rightData = start_fold_thread(tree->right, sum_function, 0);
-    int sumLeft = join_fold_thread(leftData);
-    int sumRight = join_fold_thread(rightData);
-    int f = fac(tree->value);
-    //@ leak tree->left |-> _ &*& tree->right |-> _ &*& tree->value |-> _ &*& malloc_block_tree(tree);
-    printf("%i", sumLeft + sumRight + f);
-    return 0;
-}
-\end{lstlisting}
-
-\begin{exercise}\label{exercise:fractions0}
-Verify the memory safety of this program.
-\end{exercise}
-
-It is now easy to write the program that computes the sums in
-one thread and the products in another, and returns the
-difference between the product and the sum:
-\begin{lstlisting}
-int sum_function(int acc, int x)
-{
-    int f = fac(x);
-    return acc + f;
-}
-
-int product_function(int acc, int x)
-{
-    int f = fac(x);
-    return acc * f;
-}
-
-int main()
-{
-    struct tree *tree = make_tree(21);
-    struct fold_data *sumData = start_fold_thread(tree, sum_function, 0);
-    struct fold_data *productData = start_fold_thread(tree, product_function, 1);
-    int sum = join_fold_thread(sumData);
-    int product = join_fold_thread(productData);
-    printf("%i", product - sum);
-    return 0;
-}
-\end{lstlisting}
-
 However, this program cannot be verified using the techniques
-that we have seen. The first \lstinline!start_fold_!\-\lstinline!thread! call
-consumes the \lstinline!tree! chunk, and therefore VeriFast
+that we have seen. The first \lstinline!spawn! call
+consumes the \lstinline!Tree! chunk, and therefore VeriFast
 will complain that the second call's precondition is not
 satisfied. In the system, as explained, only one thread may own
 a particular chunk of memory at any one time. Therefore, if the
@@ -2774,29 +2685,31 @@ permission}, that is, a \emph{read-write permission}. A chunk
 with a coefficient less than 1 represents a \emph{fractional
 permission}, that is, a \emph{read-only permission}.
 
-Since the \lstinline!tree_fold! function does not modify the
-tree, it requires only a fraction of the \lstinline!tree!
+Since the \lstinline!Tree::compute_sum_fibs! and \lstinline|Tree::compute_product_fibs| functions do not modify the
+tree, they require only a fraction of the \lstinline!Tree!
 chunk:
 \begin{lstlisting}
-int tree_fold(struct tree *tree, fold_function *f, int acc)
-    //@ requires [?frac]tree(tree, ?depth) &*& is_fold_function(f) == true;
-    //@ ensures [frac]tree(tree, depth);
-{
-    if (tree == 0) {
-        return acc;
-    } else {
-        //@ open [frac]tree(tree, depth);
-        acc = tree_fold(tree->left, f, acc);
-        acc = tree_fold(tree->right, f, acc);
-        acc = f(acc, tree->value);
-        return acc;
-        //@ close [frac]tree(tree, depth);
+impl Tree {
+    unsafe fn compute_sum_fibs(tree: *mut Tree) -> u64
+    //@ req [?frac]Tree(tree, ?depth);
+    //@ ens [frac]Tree(tree, depth);
+    {
+        if tree.is_null() {
+            0
+        } else {
+            //@ open [frac]Tree(tree, depth);
+            let left_sum = Self::compute_sum_fibs((*tree).left);
+            let f = wrapping_fib((*tree).value);
+            let right_sum = Self::compute_sum_fibs((*tree).right);
+            //@ close [frac]Tree(tree, depth);
+            left_sum.wrapping_add(f).wrapping_add(right_sum)
+        }
     }
 }
 \end{lstlisting}
 Notice that we use a pattern in the coefficient position, so
 that the function may be applied to an arbitrarily small
-fraction of the \lstinline!tree! chunk. Notice also that we
+fraction of the \lstinline!Tree! chunk. Notice also that we
 mention the fraction in the \lstinline!open! and
 \lstinline!close! statements. This is not necessary for the
 \lstinline!open! statement, since it will by default open
@@ -2805,8 +2718,8 @@ necessary for the \lstinline!close! statement, since it will by
 default attempt to close a chunk with coefficient 1.
 
 \begin{exercise}\label{exercise:fractions}
-Verify the memory safety of the program. Adapt function
-\lstinline!start_fold_thread! so that it requires only a
+Verify the memory safety of the program. Adapt the spawnee pre
+and post predicates so that they require only a
 \lstinline!1/2! fraction of the tree chunk. Note: decimal
 notation is not supported; use fractional notation instead.
 \end{exercise}
@@ -5839,168 +5752,59 @@ fn main()
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:fractions0}: fractions0.c}\label{solution:fractions0}
-
-\begin{lstlisting}
-typedef int fold_function(int acc, int x);
-    //@ requires true;
-    //@ ensures true;
-
-int tree_fold(struct tree *tree, fold_function *f, int acc)
-    //@ requires tree(tree, ?depth) &*& is_fold_function(f) == true;
-    //@ ensures tree(tree, depth);
-{
-    if (tree == 0) {
-        return acc;
-    } else {
-        //@ open tree(tree, depth);
-        acc = tree_fold(tree->left, f, acc);
-        acc = tree_fold(tree->right, f, acc);
-        acc = f(acc, tree->value);
-        return acc;
-        //@ close tree(tree, depth);
-    }
-}
-
-struct fold_data {
-    struct thread *thread;
-    struct tree *tree;
-    fold_function *f;
-    int acc;
-};
-
-/*@
-
-predicate_family_instance thread_run_pre(folder)(struct fold_data *data, any info) =
-    data->tree |-> ?tree &*& tree(tree, _) &*&
-    data->f |-> ?f &*& is_fold_function(f) == true &*& data->acc |-> ?acc;
-predicate_family_instance thread_run_post(folder)(struct fold_data *data, any info) =
-    data->tree |-> ?tree &*& tree(tree, _) &*&
-    data->f |-> ?f &*& is_fold_function(f) == true &*& data->acc |-> ?acc;
-
-@*/
-
-void folder(struct fold_data *data) //@ : thread_run_joinable
-    //@ requires thread_run_pre(folder)(data, ?info);
-    //@ ensures thread_run_post(folder)(data, info);
-{
-    //@ open thread_run_pre(folder)(data, info);
-    int acc = tree_fold(data->tree, data->f, data->acc);
-    data->acc = acc;
-    //@ close thread_run_post(folder)(data, info);
-}
-
-struct fold_data *start_fold_thread(struct tree *tree, fold_function *f, int acc)
-    //@ requires tree(tree, _) &*& is_fold_function(f) == true;
-    //@ ensures result->thread |-> ?t &*& thread(t, folder, result, _);
-{
-    struct fold_data *data = malloc(sizeof(struct fold_data));
-    struct thread *t = 0;
-    if (data == 0) abort();
-    //@ leak malloc_block_fold_data(data);
-    data->tree = tree;
-    data->f = f;
-    data->acc = acc;
-    //@ close thread_run_pre(folder)(data, unit);
-    t = thread_start_joinable(folder, data);
-    data->thread = t;
-    return data;
-}
-
-int join_fold_thread(struct fold_data *data)
-    //@ requires data->thread |-> ?t &*& thread(t, folder, data, _);
-    //@ ensures true;
-{
-    thread_join(data->thread);
-    //@ open thread_run_post(folder)(data, _);
-    return data->acc;
-    //@ leak data->tree |-> ?tree &*& [_]tree(tree, _);
-    //@ leak data->f |-> _ &*& data->acc |-> _ &*& data->thread |-> _;
-}
-
-int sum_function(int acc, int x) //@ : fold_function
-    //@ requires true;
-    //@ ensures true;
-{
-    int f = fac(x);
-    return acc + f;
-}
-
-int product_function(int acc, int x) //@ : fold_function
-    //@ requires true;
-    //@ ensures true;
-{
-    int f = fac(x);
-    return acc * f;
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct tree *tree = make_tree(22);
-    //@ open tree(tree, _);
-    struct fold_data *leftData = start_fold_thread(tree->left, sum_function, 0);
-    struct fold_data *rightData = start_fold_thread(tree->right, sum_function, 0);
-    int sumLeft = join_fold_thread(leftData);
-    int sumRight = join_fold_thread(rightData);
-    int f = fac(tree->value);
-    //@ leak tree->left |-> _ &*& tree->right |-> _ &*& tree->value |-> _ &*& malloc_block_tree(tree);
-    return sumLeft + sumRight + f;
-}
-\end{lstlisting}
-
 \subsection{Exercise \ref{exercise:fractions}:
-fractions.c}\label{solution:fractions}
+fractions.rs}\label{solution:fractions}
 
 \begin{lstlisting}
 /*@
-
-predicate_family_instance thread_run_pre(folder)(struct fold_data *data, any info) =
-    data->tree |-> ?tree &*& [1/2]tree(tree, _) &*&
-    data->f |-> ?f &*& is_fold_function(f) == true &*& data->acc |-> ?acc;
-predicate_family_instance thread_run_post(folder)(struct fold_data *data, any info) =
-    data->tree |-> ?tree &*& [1/2]tree(tree, _) &*&
-    data->f |-> ?f &*& is_fold_function(f) == true &*& data->acc |-> ?acc;
-
+pred_ctor inspect_tree_post(tree: *mut Tree, depth: i32)(result: u64) =
+    [1/2]Tree(tree, depth);
+pred inspect_tree_pre(tree: *mut Tree, post: pred(u64)) =
+    [1/2]Tree(tree, ?depth) &*& post == inspect_tree_post(tree, depth);
 @*/
 
-void folder(struct fold_data *data) //@ : thread_run_joinable
-    //@ requires thread_run_pre(folder)(data, ?info);
-    //@ ensures thread_run_post(folder)(data, info);
+fn main()
+//@ req true;
+//@ ens true;
 {
-    //@ open thread_run_pre(folder)(data, info);
-    int acc = tree_fold(data->tree, data->f, data->acc);
-    data->acc = acc;
-    //@ close thread_run_post(folder)(data, info);
-}
-
-struct fold_data *start_fold_thread(struct tree *tree, fold_function *f, int acc)
-    //@ requires [1/2]tree(tree, _) &*& is_fold_function(f) == true;
-    //@ ensures result->thread |-> ?t &*& thread(t, folder, result, _);
-{
-    struct fold_data *data = malloc(sizeof(struct fold_data));
-    struct thread *t = 0;
-    if (data == 0) abort();
-    //@ leak malloc_block_fold_data(data);
-    data->tree = tree;
-    data->f = f;
-    data->acc = acc;
-    //@ close thread_run_pre(folder)(data, unit);
-    t = thread_start_joinable(folder, data);
-    data->thread = t;
-    return data;
-}
-
-int join_fold_thread(struct fold_data *data)
-    //@ requires data->thread |-> ?t &*& thread(t, folder, data, _);
-    //@ ensures true;
-{
-    thread_join(data->thread);
-    //@ open thread_run_post(folder)(data, _);
-    return data->acc;
-    //@ leak data->tree |-> ?tree &*& [_]tree(tree, _);
-    //@ leak data->f |-> _ &*& data->acc |-> _ &*& data->thread |-> _;
+    unsafe {
+        let tree = Tree::make(22);
+        
+        /*@
+        produce_fn_ptr_chunk Spawnee<*mut Tree, u64>(Tree::compute_sum_fibs)
+            (inspect_tree_pre)(arg) {
+            open inspect_tree_pre(arg, _);
+            assert [1/2]Tree(arg, ?depth);
+            let result = call();
+            close inspect_tree_post(arg, depth)(result);
+        }
+        @*/
+        //@ close inspect_tree_pre(tree, _);
+        let sum_join_handle = spawn(Tree::compute_sum_fibs, tree);
+        
+        /*@
+        produce_fn_ptr_chunk Spawnee<*mut Tree, u64>(Tree::compute_product_fibs)
+            (inspect_tree_pre)(arg) {
+            open inspect_tree_pre(arg, _);
+            assert [1/2]Tree(arg, ?depth);
+            let result = call();
+            close inspect_tree_post(arg, depth)(result);
+        }
+        @*/
+        //@ close inspect_tree_pre(tree, _);
+        let product_join_handle = spawn(Tree::compute_product_fibs, tree);
+        
+        let sum = join(sum_join_handle);
+        //@ open inspect_tree_post(tree, 22)(_);
+        //@ leak [1/2]Tree(tree, 22);
+        
+        let product = join(product_join_handle);
+        //@ open inspect_tree_post(tree, 22)(_);
+        //@ leak [1/2]Tree(tree, 22);
+        
+        print_u64(sum);
+        print_u64(product);
+    }
 }
 \end{lstlisting}
 
