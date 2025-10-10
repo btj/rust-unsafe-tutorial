@@ -1705,7 +1705,7 @@ locations, since its precondition does not require any heap
 chunks; it follows that you cannot filter all elements that are
 greater than some user-provided value, for example. This will
 be solved using parameterized function types in
-Section~\ref{section:predicate-families}. Secondly, the
+Section~\ref{section:parameterized-function-types}. Secondly, the
 implementation re-assigns each next pointer, even if only a few
 elements are removed. This will be solved using by-reference
 parameters in Section~\ref{section:byref-params}.
@@ -1908,7 +1908,7 @@ unsafe fn i16_add(x: *mut i16, y: *mut i16) -> i16
 }
 \end{lstlisting}
 
-\section{Parameterized Function Types}\label{section:predicate-families}
+\section{Parameterized Function Types}\label{section:parameterized-function-types}
 
 Let's go back to the \lstinline!Stack::filter! function from
 Section~\ref{section:function-pointers}. Suppose we want to
@@ -2421,63 +2421,85 @@ Verify the program.
 \section{Multithreading}\label{section:multithreading}
 
 Consider the following program that walks a binary tree of
-integers, computes the factorial of the value of each node, sums
-up the results, and prints the sum to the console.
+nonnegative integers, for each of these integers $N$ computes the $N$'th Fibonacci number (modulo $2^{64}$), sums
+up the results (again modulo $2^{64}$), and prints the sum to the console.
 \begin{lstlisting}
-int rand();
+#![allow(unsafe_op_in_unsafe_fn)]
+use std::{alloc::{alloc, handle_alloc_error, Layout}};
 
-int fac(int x)
-{
-    int result = 1;
-    while (x > 1)
-    {
-        result = result * x;
-        x = x - 1;
-    }
-    return result;
-}
-
-struct tree {
-    struct tree *left;
-    struct tree *right;
-    int value;
-};
-
-struct tree *make_tree(int depth)
-{
-    if (depth == 0) {
-        return 0;
+unsafe fn wrapping_fib(n: u16) -> u64 {
+    if n <= 1 {
+        1
     } else {
-        struct tree *left = make_tree(depth - 1);
-        struct tree *right = make_tree(depth - 1);
-        int value = rand();
-        struct tree *t = malloc(sizeof(struct tree));
-        if (t == 0) abort();
-        t->left = left;
-        t->right = right;
-        t->value = value % 2000;
-        return t;
+        let mut k: u16 = 2;
+        let mut fib_k_minus_1: u64 = 1;
+        let mut fib_k: u64 = 1;
+        loop {
+            if k == n { break; }
+            
+            let fib_k_plus_1 = fib_k_minus_1.wrapping_add(fib_k);
+            
+            k += 1;
+            fib_k_minus_1 = fib_k;
+            fib_k = fib_k_plus_1;
+        }
+        fib_k
     }
 }
 
-int tree_compute_sum_facs(struct tree *tree)
-{
-    if (tree == 0) {
-        return 1;
-    } else {
-        int leftSum = tree_compute_sum_facs(tree->left);
-        int rightSum = tree_compute_sum_facs(tree->right);
-        int f = fac(tree->value);
-        return leftSum + rightSum + f;
-    }
+struct Tree {
+    left: *mut Tree,
+    right: *mut Tree,
+    value: u16,
 }
 
-int main()
+impl Tree {
+
+    unsafe fn make(depth: u8) -> *mut Tree {
+        if depth == 0 {
+            std::ptr::null_mut()
+        } else {
+            let left = Self::make(depth - 1);
+            let right = Self::make(depth - 1);
+            let value = 5000; // TODO: Use a random number here
+            let t = alloc(Layout::new::<Tree>()) as *mut Tree;
+            if t.is_null() {
+                handle_alloc_error(Layout::new::<Tree>());
+            }
+            (*t).left = left;
+            (*t).right = right;
+            (*t).value = value;
+            t
+        }
+    }
+
+    unsafe fn compute_sum_fibs(tree: *mut Tree) -> u64 {
+        if tree.is_null() {
+            0
+        } else {
+            let left_sum = Self::compute_sum_fibs((*tree).left);
+            let f = wrapping_fib((*tree).value);
+            let right_sum = Self::compute_sum_fibs((*tree).right);
+            left_sum.wrapping_add(f).wrapping_add(right_sum)
+        }
+    }
+
+}
+
+unsafe fn print_u64(value: u64)
+//@ req true;
+//@ ens true;
+//@ assume_correct
 {
-    struct tree *tree = make_tree(22);
-    int sum = tree_compute_sum_facs(tree);
-    printf("%i", sum);
-    return 0;
+    println!("{}", value);
+}
+
+fn main() {
+    unsafe {
+        let tree = Tree::make(22);
+        let sum = Tree::compute_sum_fibs(tree);
+        print_u64(sum)
+    }
 }
 \end{lstlisting}
 
@@ -2485,152 +2507,117 @@ int main()
 Verify the memory safety of this program. You may leak the tree (see Section~\ref{section:functions}) after computing the sum.
 \end{exercise}
 
-This program takes 14 seconds on the author's machine. However,
-the author's machine is a dual core machine, so we might be
+This program takes about 5 seconds on the author's machine. However,
+the author's machine is a multicore machine, so we might be
 able to get a speedup if we distribute the work amongst two
 threads, which may then be scheduled by the operating system on
-both cores simultaneously.
-
-Unfortunately, writing multithreaded programs currently requires using platform-specific APIs.\footnote{The 2011 edition of the C programming language standard introduced a standard multithreading library, but it is still not supported on all important platforms.}
-However, the VeriFast distribution includes a wrapper around
-these APIs that offers a uniform interface across all supported
-platforms. It is defined in \texttt{threading.h} and
-implemented in \texttt{threading.c}; both files are in the
-VeriFast \texttt{bin} directory. VeriFast automatically looks
-for header files in its \texttt{bin} directory, so to use these
-APIs, simply add the line
+both cores simultaneously. Here's a first attempt:
 \begin{lstlisting}
-#include "threading.h"
-\end{lstlisting}
-to the top of your file. In this section, we will be using the
-functions \lstinline!thread_start_joinable! and \lstinline!thread_join!
-from \texttt{threading.h}, defined as follows:
-\begin{lstlisting}
-typedef void thread_run_joinable(void *data);
+struct Sendable<T> { payload: T }
+unsafe impl<T> Send for Sendable<T> {}
 
-struct thread;
-
-struct thread *thread_start_joinable(void *run, void *data);
-
-void thread_join(struct thread *thread);
-\end{lstlisting}
-Function \lstinline!thread_start_joinable! takes a pointer to a
-\lstinline!run! function and executes this function in a new
-thread. Any data required by the run function can be passed via
-the \lstinline!data! parameter of \lstinline!thread_start_joinable!,
-which is simply passed through to the \lstinline!run! function.
-\lstinline!thread_start_joinable! returns a thread handle, which can be
-used to join with the created thread using function
-\lstinline!thread_join!. The latter waits until the specified
-thread has finished.
-
-We can use these functions to speed up our example program as
-follows:
-\begin{lstlisting}
-struct sum_data {
-    struct thread *thread;
-    struct tree *tree;
-    int sum;
-};
-
-void summator(struct sum_data *data)
-{
-    int sum = tree_compute_sum_facs(data->tree);
-    data->sum = sum;
+impl<T> Sendable<T> {
+    fn inner(self) -> T { self.payload }
 }
 
-struct sum_data *start_sum_thread(struct tree *tree)
-{
-    struct sum_data *data = malloc(sizeof(struct sum_data));
-    struct thread *t = 0;
-    if (data == 0) abort();
-    data->tree = tree;
-    t = thread_start_joinable(summator, data);
-    data->thread = t;
-    return data;
-}
+fn main() {
+    unsafe {
+        let tree = Tree::make(22);
+        let left = (*tree).left;
+        let right = (*tree).right;
+        let left_packaged = Sendable { payload: left };
+        let left_join_handle = std::thread::spawn(
+            move || Tree::compute_sum_fibs(left_packaged.inner())
+        );
+        let right_packaged = Sendable { payload: right };
+        let right_join_handle = std::thread::spawn(
+            move || Tree::compute_sum_fibs(right_packaged.inner())
+        );
+        let root_fib = wrapping_fib((*tree).value);
 
-int join_sum_thread(struct sum_data *data)
-{
-    thread_join(data->thread);
-    return data->sum;
-}
-
-int main()
-{
-    struct tree *tree = make_tree(22);
-    struct sum_data *leftData = start_sum_thread(tree->left);
-    struct sum_data *rightData = start_sum_thread(tree->right);
-    int sumLeft = join_sum_thread(leftData);
-    int sumRight = join_sum_thread(rightData);
-    int f = fac(tree->value);
-    printf("%i", sumLeft + sumRight + f);
-    return 0;
+        let left_sum = left_join_handle.join().unwrap();
+        let right_sum = right_join_handle.join().unwrap();
+        let sum = left_sum.wrapping_add(root_fib).wrapping_add(right_sum);
+        
+        print_u64(sum)
+    }
 }
 \end{lstlisting}
 The main program creates a tree of depth 22. It then starts two
-threads. The first thread computes the sum of the factorials of
+threads. The first thread computes the sum of the Fibonacci numbers of
 the values of the left subtree, and the second thread computes
-the sum of the factorials of the values of the right subtree.
+the sum of the Fibonacci numbers of the values of the right subtree.
+(We need to package the raw pointers to the subtrees
+into a \lstinline|Sendable| struct which we \lstinline|unsafe|ly declare to be \lstinline|Send|,
+because raw pointers are not themselves \lstinline|Send|.)
 The main thread then waits for both threads to finish, and
-finally sums up the results of both threads with the factorial of
+finally sums up the results of both threads with the Fibonacci number of
 the root node's value. On the author's machine, this program
-takes only 7 seconds; a twofold speedup!
+takes only about 2.5 seconds; a twofold speedup!
 
-Now, let's verify the memory safety of this program. The
-verification of this program does not require any new
-techniques; we will simply apply the techniques we saw in
-Sections~\ref{section:function-pointers} and
-\ref{section:predicate-families} on function pointers and
-predicate families. That is, we specify a contract for the
-\lstinline!thread_run_joinable! function pointer type and we use
-predicate families so that each program may concretize this
-contract according to its needs. The specification of
-\lstinline!thread_start_joinable! and \lstinline!thread_join! in
-\texttt{threading.h} is as follows:
+Now, let's verify the memory safety of this program. Unfortunately, VeriFast does
+not yet support verifying code that uses lambda expressions, so we need to factor
+these out into separate functions that we mark as \lstinline|assume_correct| and
+for which we carefully write a sound contract:
 \begin{lstlisting}
 /*@
+fn_type Spawnee<A, R>(pre: pred(A, pred(R))) = unsafe fn(arg: A) -> R;
+    req pre(arg, ?post);
+    ens post(result);
 
-predicate_family thread_run_pre(void *thread_run)(void *data, any info);
-predicate_family thread_run_post(void *thread_run)(void *data, any info);
-
+pred JoinHandle<R>(h: JoinHandle<Sendable<R>>, post: pred(R));
 @*/
 
-typedef void thread_run_joinable(void *data);
-    //@ requires thread_run_pre(this)(data, ?info);
-    //@ ensures thread_run_post(this)(data, info);
+type Spawnee<A, R> = unsafe fn(arg: A) -> R;
 
-struct thread;
+struct Sendable<T> { payload: T }
+unsafe impl<T> Send for Sendable<T> {}
 
-/*@ predicate thread(struct thread *thread, void *thread_run, void *data, any info); @*/
+unsafe fn spawn<A, R>(f: Spawnee<A, R>, arg: A) -> JoinHandle<Sendable<R>>
+where A: 'static, R: 'static
+//@ req [_]is_Spawnee::<A, R>(f, ?pre) &*& pre(arg, ?post);
+//@ ens JoinHandle(result, post);
+//@ assume_correct
+{
+    let package = Sendable { payload: arg };
+    std::thread::spawn(move || {
+        let package_moved = package;
+        Sendable { payload: f(package_moved.payload) }
+    })
+}
 
-struct thread *thread_start_joinable(void *run, void *data);
-    //@ requires is_thread_run_joinable(run) == true &*& thread_run_pre(run)(data, ?info);
-    //@ ensures thread(result, run, data, info);
+unsafe fn join<R>(h: JoinHandle<Sendable<R>>) -> R
+//@ req JoinHandle(h, ?post);
+//@ ens post(result);
+//@ assume_correct
+{
+    h.join().unwrap().payload
+}
 
-void thread_join(struct thread *thread);
-    //@ requires thread(thread, ?run, ?data, ?info);
-    //@ ensures thread_run_post(run)(data, info);
+fn main() {
+    unsafe {
+        let tree = Tree::make(22);
+        let left = (*tree).left;
+        let right = (*tree).right;
+        let left_join_handle = spawn(Tree::compute_sum_fibs, left);
+        let right_join_handle = spawn(Tree::compute_sum_fibs, right);
+        let root_fib = wrapping_fib((*tree).value);
+
+        let left_sum = join(left_join_handle);
+        let right_sum = join(right_join_handle);
+        let sum = left_sum.wrapping_add(root_fib).wrapping_add(right_sum);
+        
+        print_u64(sum)
+    }
+}
 \end{lstlisting}
-Function \lstinline!thread_start_joinable! requires that the value of
-parameter \lstinline!run! is a function pointer that satisfies
-the contract of function pointer type \lstinline!thread_run_joinable!;
-furthermore, it requires the resources that are required by the
-\lstinline!run! function itself, denoted by the
-\lstinline!thread_run_pre(run)! predicate family instance. This
-predicate takes the \lstinline!data! pointer as an
-argument, so that the precondition may describe the data
-structure pointed to by this pointer. The \lstinline!info!
-parameter of \lstinline!thread_run_pre! and
-\lstinline!thread_run_post! is used in advanced scenarios and
-may be ignored for now. Function \lstinline!thread_start_joinable!
-returns a \lstinline!thread! predicate that contains all
-information required to verify the \lstinline!thread_join!
-call. Function \lstinline!thread_join! takes this
-\lstinline!thread! predicate and returns the resources provided
-by the \lstinline!run! function when it returns, as described
-by the \lstinline!thread_run_post(run)! predicate family
-instance.
+
+The
+verification of this program does not require any new
+techniques; we will simply apply the techniques we saw in
+Sections~\ref{section:function-pointers}, \ref{section:parameterized-function-types}, and \ref{section:predctors}
+on function pointers,
+parameterized function types, and predicate constructors.
 
 \begin{exercise}\label{exercise:threads}
 Verify the memory safety of the program. Don't worry about memory deallocation;
@@ -5689,159 +5676,166 @@ fn main()
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:threads0}:
-threads0.c}\label{solution:threads0}
+threads0.rs}\label{solution:threads0}
 
 \begin{lstlisting}
-#include "stdlib.h"
-#include "malloc.h"
+// verifast_options{ignore_unwind_paths}
+#![allow(unsafe_op_in_unsafe_fn)]
+use std::{alloc::{alloc, handle_alloc_error, Layout}};
 
-int rand();
-    //@ requires true;
-    //@ ensures true;
-
-int fac(int x)
-    //@ requires true;
-    //@ ensures true;
+unsafe fn wrapping_fib(n: u16) -> u64
+//@ req true;
+//@ ens true;
 {
-    int result = 1;
-    while (x > 1)
-        //@ invariant true;
-    {
-        result = result * x;
-        x = x - 1;
+    if n <= 1 {
+        1
+    } else {
+        let mut k: u16 = 2;
+        let mut fib_k_minus_1: u64 = 1;
+        let mut fib_k: u64 = 1;
+        loop {
+            //@ inv k <= n;
+            
+            if k == n { break; }
+            
+            let fib_k_plus_1 = fib_k_minus_1.wrapping_add(fib_k);
+            
+            k += 1;
+            fib_k_minus_1 = fib_k;
+            fib_k = fib_k_plus_1;
+        }
+        fib_k
     }
-    return result;
 }
 
-struct tree {
-    struct tree *left;
-    struct tree *right;
-    int value;
-};
+struct Tree {
+    left: *mut Tree,
+    right: *mut Tree,
+    value: u16,
+}
 
-/*@ predicate tree(struct tree *t, int depth) =
-    t == 0 ?
+/*@
+
+pred Tree(t: *mut Tree, depth: u8) =
+    if t == 0 {
         depth == 0
-    :
-        t->left |-> ?left &*& t->right |-> ?right &*& t->value |-> ?value &*&
-        malloc_block_tree(t) &*& tree(left, depth - 1) &*& tree(right, depth - 1);
+    } else {
+        (*t).left |-> ?left &*& Tree(left, depth - 1) &*&
+        (*t).right |-> ?right &*& Tree(right, depth - 1) &*&
+        (*t).value |-> ?value &*&
+        alloc_block_Tree(t)
+    };
+
 @*/
 
-struct tree *make_tree(int depth)
-    //@ requires true;
-    //@ ensures tree(result, depth);
-{
-    if (depth == 0) {
-        //@ close tree(0, 0);
-        return 0;
-    } else {
-        struct tree *left = make_tree(depth - 1);
-        struct tree *right = make_tree(depth - 1);
-        int value = rand();
-        struct tree *t = malloc(sizeof(struct tree));
-        if (t == 0) abort();
-        t->left = left;
-        t->right = right;
-        t->value = value % 2000;
-        //@ close tree(t, depth);
-        return t;
+impl Tree {
+
+    unsafe fn make(depth: u8) -> *mut Tree
+    //@ req true;
+    //@ ens Tree(result, depth);
+    {
+        if depth == 0 {
+            //@ close Tree(0, 0);
+            std::ptr::null_mut()
+        } else {
+            let left = Self::make(depth - 1);
+            let right = Self::make(depth - 1);
+            let value = 5000; // TODO: Use a random number here
+            let t = alloc(Layout::new::<Tree>()) as *mut Tree;
+            if t.is_null() {
+                handle_alloc_error(Layout::new::<Tree>());
+            }
+            (*t).left = left;
+            (*t).right = right;
+            (*t).value = value;
+            //@ close Tree(t, depth);
+            t
+        }
     }
+
+    unsafe fn compute_sum_fibs(tree: *mut Tree) -> u64
+    //@ req Tree(tree, ?depth);
+    //@ ens Tree(tree, depth);
+    {
+        if tree.is_null() {
+            0
+        } else {
+            //@ open Tree(tree, depth);
+            let left_sum = Self::compute_sum_fibs((*tree).left);
+            let f = wrapping_fib((*tree).value);
+            let right_sum = Self::compute_sum_fibs((*tree).right);
+            //@ close Tree(tree, depth);
+            left_sum.wrapping_add(f).wrapping_add(right_sum)
+        }
+    }
+
 }
 
-int tree_compute_sum_facs(struct tree *tree)
-    //@ requires tree(tree, ?depth);
-    //@ ensures tree(tree, depth);
+unsafe fn print_u64(value: u64)
+//@ req true;
+//@ ens true;
+//@ assume_correct
 {
-    if (tree == 0) {
-        return 1;
-    } else {
-        //@ open tree(tree, depth);
-        int leftSum = tree_compute_sum_facs(tree->left);
-        int rightSum = tree_compute_sum_facs(tree->right);
-        int f = fac(tree->value);
-        return leftSum + rightSum + f;
-        //@ close tree(tree, depth);
-    }
+    println!("{}", value);
 }
 
-int main()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct tree *tree = make_tree(22);
-    int sum = tree_compute_sum_facs(tree);
-    //@ leak tree(tree, _);
-    return sum;
+    unsafe {
+        let tree = Tree::make(22);
+        let sum = Tree::compute_sum_fibs(tree);
+        //@ leak Tree(tree, 22);
+        print_u64(sum)
+    }
 }
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:threads}:
-threads.c}\label{solution:threads}
+threads.rs}\label{solution:threads}
 
 \begin{lstlisting}
-struct sum_data {
-    struct thread *thread;
-    struct tree *tree;
-    int sum;
-};
-
 /*@
-
-predicate_family_instance thread_run_pre(summator)(struct sum_data *data, any info) =
-    data->tree |-> ?tree &*& tree(tree, _) &*& data->sum |-> _;
-predicate_family_instance thread_run_post(summator)(struct sum_data *data, any info) =
-    data->tree |-> ?tree &*& tree(tree, _) &*& data->sum |-> ?sum;
-
+pred_ctor compute_sum_fibs_post(tree: *mut Tree, depth: i32)(result: u64) = Tree(tree, depth);
+pred compute_sum_fibs_pre(tree: *mut Tree, post: pred(u64)) =
+    Tree(tree, ?depth) &*& post == compute_sum_fibs_post(tree, depth);
 @*/
 
-void summator(struct sum_data *data) //@ : thread_run_joinable
-    //@ requires thread_run_pre(summator)(data, ?info);
-    //@ ensures thread_run_post(summator)(data, info);
+fn main()
+//@ req true;
+//@ ens true;
 {
-    //@ open thread_run_pre(summator)(data, info);
-    int sum = tree_compute_sum_facs(data->tree);
-    data->sum = sum;
-    //@ close thread_run_post(summator)(data, info);
-}
+    unsafe {
+        let tree = Tree::make(22);
+        //@ open Tree(tree, 22);
+        let left = (*tree).left;
+        let right = (*tree).right;
+        /*@
+        produce_fn_ptr_chunk Spawnee<*mut Tree, u64>(Tree::compute_sum_fibs)
+            (compute_sum_fibs_pre)(arg) {
+            open compute_sum_fibs_pre(arg, _);
+            assert Tree(arg, ?depth);
+            let result = call();
+            close compute_sum_fibs_post(arg, depth)(result);
+        }
+        @*/
+        //@ close compute_sum_fibs_pre(left, _);
+        let left_join_handle = spawn(Tree::compute_sum_fibs, left);
+        //@ close compute_sum_fibs_pre(right, _);
+        let right_join_handle = spawn(Tree::compute_sum_fibs, right);
+        let root_fib = wrapping_fib((*tree).value);
 
-struct sum_data *start_sum_thread(struct tree *tree)
-    //@ requires tree(tree, _);
-    //@ ensures result->thread |-> ?t &*& thread(t, summator, result, _);
-{
-    struct sum_data *data = malloc(sizeof(struct sum_data));
-    struct thread *t = 0;
-    if (data == 0) abort();
-    //@ leak malloc_block_sum_data(data);
-    data->tree = tree;
-    //@ close thread_run_pre(summator)(data, unit);
-    t = thread_start_joinable(summator, data);
-    data->thread = t;
-    return data;
-}
-
-int join_sum_thread(struct sum_data *data)
-    //@ requires data->thread |-> ?t &*& thread(t, summator, data, _);
-    //@ ensures true;
-{
-    thread_join(data->thread);
-    //@ open thread_run_post(summator)(data, _);
-    return data->sum;
-    //@ leak data->tree |-> ?tree &*& tree(tree, _) &*& data->sum |-> _ &*& data->thread |-> _;
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    struct tree *tree = make_tree(22);
-    //@ open tree(tree, _);
-    struct sum_data *leftData = start_sum_thread(tree->left);
-    struct sum_data *rightData = start_sum_thread(tree->right);
-    int sumLeft = join_sum_thread(leftData);
-    int sumRight = join_sum_thread(rightData);
-    int f = fac(tree->value);
-    //@ leak tree->left |-> _ &*& tree->right |-> _ &*& tree->value |-> _ &*& malloc_block_tree(tree);
-    return sumLeft + sumRight + f;
+        let left_sum = join(left_join_handle);
+        //@ open compute_sum_fibs_post(left, 21)(_);
+        let right_sum = join(right_join_handle);
+        //@ open compute_sum_fibs_post(right, 21)(_);
+        let sum = left_sum.wrapping_add(root_fib).wrapping_add(right_sum);
+        
+        //@ close Tree(tree, 22);
+        //@ leak Tree(tree, 22);
+        print_u64(sum)
+    }
 }
 \end{lstlisting}
 
