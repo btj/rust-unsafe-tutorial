@@ -2948,7 +2948,7 @@ allows us to remove all ghost commands for opening or closing
 
 Suppose we want to write a program that monitors two sensors
 and that prints the total number of pulses detected by both
-sensors, once every second. We can wait for a pulse from a
+sensors, once every second. Suppose we can wait for a pulse from a
 given sensor using the API function \lstinline!wait_for_pulse!.
 Since pulses come in at both sensors simultaneously, we need to
 wait for pulses from each sensor in a separate thread. Whenever
@@ -2961,7 +2961,12 @@ such as the counter in this example, then they need to
 synchronize their accesses; otherwise, two concurrent accesses
 may interfere, causing the result to be different from the
 result that would be obtained if the accesses were performed
-one after the other. Most programming platforms provide various
+one after the other. Unsynchronized conflicting concurrent accesses
+of the same variable are known as \emph{data races}. In some programming languages,
+including C, C{+}{+}, and Rust, data races cause \emph{undefined behavior},
+which means the compiler can miscompile programs that perform data races
+in arbitrary ways.
+Most programming platforms provide various
 synchronization constructs to synchronize threads in various
 ways.
 
@@ -2987,93 +2992,75 @@ When a thread attempts to acquire a mutex, there are two cases.
     and the program is terminated.
 \end{itemize}
 
-Currently performing synchronization in C programs requires using platform-specific APIs.\footnote{The 2011 edition of the C programming language standard introduced a standard synchronization library, but it is still not supported on all important platforms.} To
-enable a uniform interface across all platforms, VeriFast
-includes a module \texttt{threading.c} that offers two
-synchronization constructs: mutexes and locks. The only
-difference between the two is that mutexes are non-re-entrant
-and locks are re-entrant. Since mutexes are easier to use, we
-will use those in this example.
-
 Here's the source code of the example program:
 \begin{lstlisting}
-#include "stdlib.h"
-#include "threading.h"
+use std::alloc::{Layout, alloc, handle_alloc_error};
 
-void wait_for_pulse(int source);
-void sleep(int millis);
-void print_int(int n);
+unsafe fn wait_for_pulse(_source: i32) { ... }
+unsafe fn print_u32(n: u32) { println!("{}", n); }
 
-struct counter {
-    int count;
-    struct mutex *mutex;
-};
+struct CountPulsesData {
+    counter: *mut u32,
+    mutex: *mut Mutex,
+    source: i32,
+}
 
-struct count_pulses_data {
-    struct counter *counter;
-    int source;
-};
+unsafe fn count_pulses(data: CountPulsesData) {
+    let CountPulsesData {counter, mutex, source} = data;
 
-void count_pulses(struct count_pulses_data *data) {
-    struct counter *counter = data->counter;
-    int source = data->source;
-    free(data);
-
-    struct mutex *mutex = counter->mutex;
-
-    while (true) {
+    loop {
         wait_for_pulse(source);
-        mutex_acquire(mutex);
-        counter->count++;
-        mutex_release(mutex);
+        let guard = acquire(mutex);
+        *counter = (*counter).checked_add(1).unwrap();
+        release(guard);
     }
 }
 
-void count_pulses_async(struct counter *counter, int source) {
-    struct count_pulses_data *data = malloc(sizeof(struct count_pulses_data));
-    if (data == 0) abort();
-    data->counter = counter;
-    data->source = source;
-    thread_start(count_pulses, data);
+unsafe fn count_pulses_async(counter: *mut u32, mutex: *mut Mutex, source: i32) {
+    let data = CountPulsesData { counter, mutex, source };
+    spawn(count_pulses, data);
 }
 
-int main() {
-    struct counter *counter = malloc(sizeof(struct counter));
-    if (counter == 0) abort();
-    counter->count = 0;
-    struct mutex *mutex = create_mutex();
-    counter->mutex = mutex;
+fn main() {
+    unsafe {
+        let counter = alloc(Layout::new::<u32>()) as *mut u32;
+        if counter.is_null() { handle_alloc_error(Layout::new::<u32>()); }
+        *counter = 0;
+        let mutex = create_mutex();
 
-    count_pulses_async(counter, 1);
-    count_pulses_async(counter, 2);
+        count_pulses_async(counter, mutex, 1);
+        count_pulses_async(counter, mutex, 2);
 
-    while (true) {
-        sleep(1000);
-        mutex_acquire(mutex);
-        print_int(counter->count);
-        mutex_release(mutex);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let guard = acquire(mutex);
+            let count = *counter;
+            release(guard);
+            print_u32(count);
+        }
     }
 }
 \end{lstlisting}
 
-For this program we use the threading API function
-\lstinline!thread_start! instead of
-\lstinline!thread_start_joinable!, since we will not be joining
-the thread. The specification of function
-\lstinline!thread_start! is analogous to the specification of
-function \lstinline!thread_start_joinable! discussed in
-Section~\ref{section:multithreading}; it is given in header
-file \texttt{threading.h} as follows:
+This program uses the following API for spawning a thread (similar to the \lstinline|spawn| function
+used in earlier examples, but simpler since we don't need to join the spawned thread):
 \begin{lstlisting}
-//@ predicate_family thread_run_data(void *thread_run)(void *data);
+/*@
+fn_type Spawnee<T>(pre: pred(T)) = unsafe fn(arg: T);
+    req pre(arg);
+    ens true;
+@*/
 
-typedef void thread_run(void *data);
-    //@ requires thread_run_data(this)(data);
-    //@ ensures true;
+unsafe fn spawn<T: 'static>(f: unsafe fn(arg: T), arg: T)
+//@ req [_]is_Spawnee(f, ?pre) &*& pre(arg);
+//@ ens true;
+\end{lstlisting}
 
-void thread_start(void *run, void *data);
-    //@ requires is_thread_run(run) == true &*& thread_run_data(run)(data);
-    //@ ensures true;
+For mutual exclusion, it uses the following simple API offering non-re-entrant mutexes:\footnote{This API can be implemented straightforwardly on top of Rust's \lstinline|std::sync::Mutex<()>|.}
+\begin{lstlisting}
+unsafe fn create_mutex() -> *mut Mutex { ... }
+unsafe fn acquire(mutex: *mut Mutex) -> MutexGuard { ... }
+unsafe fn release(guard: MutexGuard) { ... }
 \end{lstlisting}
 
 It's easy to make mistakes when programming using mutexes. The
@@ -3098,32 +3085,22 @@ memory locations again become the property of the mutex. This
 way, by sharing a mutex, threads can indirectly share arbitrary
 memory locations in a well-synchronized way.
 
-The mutex functions offered by \texttt{threading.c} are
-specified in \texttt{threading.h} as follows:
+Here is a specification for the mutex API:
 \begin{lstlisting}
-struct mutex;
+//@ pred Mutex(mutex: *mut Mutex; inv_: pred());
+//@ pred MutexGuard(guard: MutexGuard, mutex: *mut Mutex, inv_: pred(), frac: real, t: thread_id_t);
 
-/*@
-predicate mutex(struct mutex *mutex; predicate() p);
-predicate mutex_held(struct mutex *mutex, predicate() p, int threadId, real frac);
-predicate create_mutex_ghost_arg(predicate() p) = true;
-@*/
+unsafe fn create_mutex() -> *mut Mutex
+//@ req exists::<pred()>(?inv_) &*& inv_();
+//@ ens Mutex(result, inv_);
 
-struct mutex *create_mutex();
-    //@ requires create_mutex_ghost_arg(?p) &*& p();
-    //@ ensures mutex(result, p);
+unsafe fn acquire(mutex: *mut Mutex) -> MutexGuard
+//@ req [?frac]Mutex(mutex, ?inv_);
+//@ ens MutexGuard(result, mutex, inv_, frac, currentThread) &*& inv_();
 
-void mutex_acquire(struct mutex *mutex);
-    //@ requires [?f]mutex(mutex, ?p);
-    //@ ensures mutex_held(mutex, p, currentThread, f) &*& p();
-
-void mutex_release(struct mutex *mutex);
-    //@ requires mutex_held(mutex, ?p, currentThread, ?f) &*& p();
-    //@ ensures [f]mutex(mutex, p);
-
-void mutex_dispose(struct mutex *mutex);
-    //@ requires mutex(mutex, ?p);
-    //@ ensures p();
+unsafe fn release(guard: MutexGuard)
+//@ req MutexGuard(guard, ?mutex, ?inv_, ?frac, currentThread) &*& inv_();
+//@ ens [frac]Mutex(mutex, inv_);
 \end{lstlisting}
 
 When you create a mutex, you need to specify the \emph{lock
@@ -3133,37 +3110,36 @@ value} (see Section~\ref{section:predvals}). Since the real
 function \lstinline!create_mutex! cannot take the predicate
 value as a real argument, it takes it as a ghost argument, in
 the form of the argument of the
-\lstinline!create_mutex_ghost_arg! predicate, which exists only
-for this purpose. That is, before calling
-\lstinline!create_mutex!, you need to close a
-\lstinline!create_mutex_ghost_arg! chunk, whose argument is the
+\lstinline!exists! predicate, which exists only
+for this purpose. It is defined in \verb|prelude_core.rsspec| as
+\begin{lstlisting}
+pred exists<t>(x: t;) = true;
+\end{lstlisting}
+Before calling
+\lstinline!create_mutex!, you need to close an
+\lstinline!exists! chunk, whose argument is the
 name of the predicate that specifies the lock invariant for the
 new mutex. The \lstinline!create_mutex! call consumes the ghost
 argument chunk and the lock invariant chunk itself, and
-produces a \lstinline!mutex! chunk that represents the mutex.
+produces a \lstinline!Mutex! chunk that represents the mutex.
 This chunk specifies the lock invariant as its second argument.
 
 To allow multiple threads to share a mutex, a mutex chunk can
 be split into multiple fractions. Only a fraction of a mutex
 chunk is required to acquire the mutex. When the mutex is
-acquired, the \lstinline!mutex! chunk fraction is transformed
-into a \lstinline!mutex_held! chunk, that specifies not only
+acquired, the \lstinline!Mutex! chunk fraction is transformed
+into a \lstinline!MutexGuard! chunk, that specifies not only
 the mutex and the lock invariant, but also the thread that
 acquired the mutex and the coefficient of the mutex chunk
 fraction that was used to acquire the mutex. The
-\lstinline!mutex_acquire! call additionally produces the lock
+\lstinline!acquire! call additionally produces the lock
 invariant, giving the thread access to the memory locations
 that were owned by the mutex.
 
-The \lstinline!mutex_release! call consumes a
-\lstinline!mutex_held! chunk for the current thread, as well as
-the lock invariant, and produces the original \lstinline!mutex!
+The \lstinline!release! call consumes a
+\lstinline!MutexGuard! chunk for the current thread, as well as
+the lock invariant, and produces the original \lstinline!Mutex!
 chunk that was used to acquire the lock.
-
-If necessary, after a program is done using a mutex, it can
-reassemble all mutex chunk fractions and dispose the mutex;
-this returns ownership of the lock invariant to the thread that
-disposes the mutex.
 
 \begin{exercise}\label{exercise:mutexes}
 Verify the example program.
@@ -5752,104 +5728,146 @@ fn main()
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:mutexes}:
-mutexes.c}\label{solution:mutexes}
+mutexes.rs}\label{solution:mutexes}
 
 \begin{lstlisting}
-#include "stdlib.h"
-#include "threading.h"
-
-void wait_for_pulse(int source);
-    //@ requires true;
-    //@ ensures true;
-
-void sleep(int millis);
-    //@ requires true;
-    //@ ensures true;
-
-void print_int(int n);
-    //@ requires true;
-    //@ ensures true;
-
-struct counter {
-    int count;
-    struct mutex *mutex;
-};
-
-//@ predicate_ctor counter(struct counter *counter)() = counter->count |-> ?count;
-
-struct count_pulses_data {
-    struct counter *counter;
-    int source;
-};
+// verifast_options{ignore_unwind_paths}
+use std::alloc::{Layout, alloc, handle_alloc_error};
 
 /*@
-
-predicate_family_instance thread_run_data(count_pulses)(struct count_pulses_data *data) =
-    malloc_block_count_pulses_data(data) &*&
-    data->counter |-> ?counter &*& data->source |-> ?source &*&
-    [1/2]counter->mutex |-> ?mutex &*& [1/3]mutex(mutex, counter(counter));
-
+fn_type Spawnee<T>(pre: pred(T)) = unsafe fn(arg: T);
+    req pre(arg);
+    ens true;
 @*/
 
-void count_pulses(struct count_pulses_data *data) //@ : thread_run
-    //@ requires thread_run_data(count_pulses)(data);
-    //@ ensures true;
+struct Sendable<T> { payload: T }
+unsafe impl<T> Send for Sendable<T> {}
+
+unsafe fn spawn<T: 'static>(f: unsafe fn(arg: T), arg: T)
+//@ req [_]is_Spawnee(f, ?pre) &*& pre(arg);
+//@ ens true;
+//@ assume_correct
 {
-    //@ open thread_run_data(count_pulses)(data);
-    struct counter *counter = data->counter;
-    int source = data->source;
-    free(data);
+    let package = Sendable { payload: arg };
+    std::thread::spawn(move || {
+        let package_moved = package;
+        f(package_moved.payload)
+    });
+}
 
-    struct mutex *mutex = counter->mutex;
+type Mutex = std::sync::Mutex<()>;
+type MutexGuard = std::sync::MutexGuard<'static, ()>;
 
-    while (true)
-        //@ invariant [1/3]mutex(mutex, counter(counter));
-    {
+//@ pred Mutex(mutex: *mut Mutex; inv_: pred());
+//@ pred MutexGuard(guard: MutexGuard, mutex: *mut Mutex, inv_: pred(), frac: real, t: thread_id_t);
+
+unsafe fn create_mutex() -> *mut Mutex
+//@ req exists::<pred()>(?inv_) &*& inv_();
+//@ ens Mutex(result, inv_);
+//@ assume_correct
+{
+    let mutex = alloc(Layout::new::<Mutex>()) as *mut Mutex;
+    if mutex.is_null() { handle_alloc_error(Layout::new::<Mutex>()); }
+    mutex.write(Mutex::new(()));
+    mutex
+}
+
+unsafe fn acquire(mutex: *mut Mutex) -> MutexGuard
+//@ req [?frac]Mutex(mutex, ?inv_);
+//@ ens MutexGuard(result, mutex, inv_, frac, currentThread) &*& inv_();
+//@ assume_correct
+{
+    (*mutex).lock().unwrap()
+}
+
+unsafe fn release(guard: MutexGuard)
+//@ req MutexGuard(guard, ?mutex, ?inv_, ?frac, currentThread) &*& inv_();
+//@ ens [frac]Mutex(mutex, inv_);
+//@ assume_correct
+{
+    drop(guard);
+}
+
+unsafe fn wait_for_pulse(_source: i32)
+//@ req true;
+//@ ens true;
+{
+    // For simplicity, instead of actually waiting for input
+    // from a sensor, we just sleep for 500ms.
+    std::thread::sleep(std::time::Duration::from_millis(500)); 
+}
+
+unsafe fn print_u32(n: u32)
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    println!("{}", n);
+}
+
+//@ pred_ctor counter_inv(counter: *mut u32)() = *counter |-> ?count;
+
+struct CountPulsesData {
+    counter: *mut u32,
+    mutex: *mut Mutex,
+    source: i32,
+}
+
+//@ pred count_pulses_pre(data: CountPulsesData) = [1/3]Mutex(data.mutex, counter_inv(data.counter));
+
+unsafe fn count_pulses(data: CountPulsesData)
+//@ req count_pulses_pre(data);
+//@ ens true;
+{
+    //@ open count_pulses_pre(data);
+    let CountPulsesData {counter, mutex, source} = data;
+
+    loop {
+        //@ inv [1/3]Mutex(mutex, counter_inv(counter));
         wait_for_pulse(source);
-        mutex_acquire(mutex);
-        //@ open counter(counter)();
-        counter->count++;
-        //@ close counter(counter)();
-        mutex_release(mutex);
+        let guard = acquire(mutex);
+        //@ open counter_inv(counter)();
+        *counter = (*counter).checked_add(1).unwrap();
+        //@ close counter_inv(counter)();
+        release(guard);
     }
 }
 
-void count_pulses_async(struct counter *counter, int source)
-    //@ requires [1/2]counter->mutex |-> ?mutex &*& [1/3]mutex(mutex, counter(counter));
-    //@ ensures true;
+unsafe fn count_pulses_async(counter: *mut u32, mutex: *mut Mutex, source: i32)
+//@ req [1/3]Mutex(mutex, counter_inv(counter));
+//@ ens true;
 {
-    struct count_pulses_data *data = malloc(sizeof(struct count_pulses_data));
-    if (data == 0) abort();
-    data->counter = counter;
-    data->source = source;
-    //@ close thread_run_data(count_pulses)(data);
-    thread_start(count_pulses, data);
+    let data = CountPulsesData { counter, mutex, source };
+    //@ close count_pulses_pre(data);
+    //@ produce_fn_ptr_chunk Spawnee<CountPulsesData>(count_pulses)(count_pulses_pre)(arg) { call(); }
+    spawn(count_pulses, data);
 }
 
-int main() //@ : main
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    struct counter *counter = malloc(sizeof(struct counter));
-    if (counter == 0) abort();
-    counter->count = 0;
-    //@ close counter(counter)();
-    //@ close create_mutex_ghost_arg(counter(counter));
-    struct mutex *mutex = create_mutex();
-    counter->mutex = mutex;
+    unsafe {
+        let counter = alloc(Layout::new::<u32>()) as *mut u32;
+        if counter.is_null() { handle_alloc_error(Layout::new::<u32>()); }
+        *counter = 0;
+        //@ close counter_inv(counter)();
+        //@ close exists(counter_inv(counter));
+        let mutex = create_mutex();
 
-    count_pulses_async(counter, 1);
-    count_pulses_async(counter, 2);
+        count_pulses_async(counter, mutex, 1);
+        count_pulses_async(counter, mutex, 2);
 
-    while (true)
-        //@ invariant [1/3]mutex(mutex, counter(counter));
-    {
-        sleep(1000);
-        mutex_acquire(mutex);
-        //@ open counter(counter)();
-        print_int(counter->count);
-        //@ close counter(counter)();
-        mutex_release(mutex);
+        loop {
+            //@ inv [1/3]Mutex(mutex, counter_inv(counter));
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let guard = acquire(mutex);
+            //@ open counter_inv(counter)();
+            let count = *counter;
+            //@ close counter_inv(counter)();
+            release(guard);
+            print_u32(count);
+        }
     }
 }
 \end{lstlisting}
