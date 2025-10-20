@@ -3413,17 +3413,17 @@ a call \lstinline!read_bytes(start, count)! requires permission to access the lo
 How can we express this? If we support only up to 5 characters, we can use the following precondition:
 \begin{lstlisting}
 /*@
-req if count <= 0 { true } else {
+req if count == 0 { true } else {
         *start |-> _ &*&
-        if count - 1 <= 0 { true } else {
+        if count - 1 == 0 { true } else {
             *(start + 1) |-> _ &*&
-            if count - 2 <= 0 { true } else {
+            if count - 2 == 0 { true } else {
                 *(start + 2) |-> _ &*&
-                if count - 3 <= 0 { true } else {
+                if count - 3 == 0 { true } else {
                     *(start + 3) |-> _ &*&
-                    if count - 4 <= 0 { true } else {
+                    if count - 4 == 0 { true } else {
                         *(start + 4) |-> _ &*&
-                        if count - 5 <= 0 { true } else {
+                        if count - 5 == 0 { true } else {
                             false}}}}}};
 @*/
 \end{lstlisting}
@@ -3451,10 +3451,10 @@ The solution is to use \emph{recursive predicates}. Notice that the precondition
 and then using this name in the assertion itself, we can make the assertion go on forever:
 \begin{lstlisting}
 pred bytes_(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
 
 pred bytes(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> ?_ &*& bytes_(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> ?_ &*& bytes_(start + 1, count - 1) };
 \end{lstlisting}
 You can obtain something very close to the precondition of \lstinline!read_bytes! by unrolling predicate \lstinline|bytes_| five times, i.e. by replacing the occurrence of \lstinline!bytes_!
 with its definition five times. The only difference is that instead of \lstinline!false!, we get \lstinline!bytes_(start + 5, count - 5)!. That is, \lstinline!bytes_! doesn't stop
@@ -3470,9 +3470,9 @@ unsafe fn write_byte(value: u8) /*@ req true; @*/ /*@ ens true; @*/ /*@ assume_c
 
 /*@
 pred bytes_(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
 pred bytes(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
 @*/
 
 unsafe fn alloc(count: usize) -> *mut u8
@@ -3545,19 +3545,18 @@ It should then write the first array to standard output. The XOR of two bytes \l
 
 \section{Looping over an Array}\label{section:array-loops}
 
-The example program of the previous section, that reads a sequence of 100 characters from standard input and then writes it twice to standard output,
-is correct. However, it would probably not work if we attempted to read ten million characters. This is because functions \lstinline!getchars! and
-\lstinline!putchars! would in that scenario perform ten million nested recursive calls. This would most likely exhaust the call stack.\footnote{Unless the
-C compiler performs tail call optimization. But the C standard does not require compilers to do so.} Therefore, it is safer to rewrite these functions so that
-they use a loop instead of recursion. Let's rewrite function \lstinline!getchars!:
+The example program of the previous section, that reads a sequence of 100 bytes from standard input and then writes it twice to standard output,
+is correct. However, it would probably not work if we attempted to read ten million bytes. This is because functions \lstinline!read_bytes! and
+\lstinline!write_bytes! would in that scenario perform ten million nested recursive calls. This would most likely exhaust the call stack.\footnote{The Rust compiler might in some cases perform tail call optimization, but we cannot rely on it doing so.} Therefore, it is safer to rewrite these functions so that
+they use a loop instead of recursion. Let's rewrite function \lstinline!read_bytes!:\footnote{A \lstinline|for| loop would have been more idiomatic here, but unfortunately VeriFast only supports \lstinline|loop| loops for now.}
 \begin{lstlisting}
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
-{
-    for (int i = 0; i < count; i++) {
-        char c = getchar();
-        *(start + i) = c;
+unsafe fn read_bytes(start: *mut u8, count: usize) {
+    let mut i = 0;
+    loop {
+        if i == count { break; }
+        let b = read_byte();
+        *start.add(i) = b;
+        i += 1;
     }
 }
 \end{lstlisting}
@@ -3566,100 +3565,103 @@ verify the loop body only once, starting from a symbolic state that represents t
 invariant describes this symbolic state. Specifically, it describes the contents of the symbolic heap, as well as any required information
 about the value of the local variables that are modified by the loop. (See Section~\ref{section:loops} for more information about loops.)
 
-In the example, at the start of each loop iteration, the symbolic heap contains the \lstinline!characters! chunk, and the value of variable
-\lstinline!i! is nonnegative. We encode this as follows:
+In the example, at the start of each loop iteration, the first \lstinline|i| bytes have been initialized, and the remaining \lstinline|count - i| bytes are yet to be initialized. We encode this as follows:
 \begin{lstlisting}
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
 {
-    for (int i = 0; i < count; i++)
-        //@ invariant characters(start, count) &*& 0 <= i;
-    {
-        char c = getchar();
-        *(start + i) = c;
+    let mut i = 0;
+    loop {
+        //@ inv bytes(start, i) &*& bytes_(start + i, count - i);
+        if i == count { break; }
+        let b = read_byte();
+        *start.add(i) = b;
+        i += 1;
     }
 }
 \end{lstlisting}
-VeriFast now complains that it cannot find the permission to write the character at address \lstinline!start + i! in the symbolic heap.
-This permission is in fact present, but it is hidden inside the \lstinline!characters(start, count)! chunk. In the easy case, it is sufficient
-to simply open a chunk in order to reveal the permissions that are hidden inside of it. However, in this case, the permission is hidden below
-multiple layers of the \lstinline!characters! predicate. In fact, it is hidden below exactly \lstinline!i + 1! layers. It would require
-\lstinline!i + 1! open operations to reveal the permission. We cannot write these operations directly in the program text, since we do not know
-how many operations to write.
-
-The solution is to first rewrite the \lstinline!characters(start, count)! chunk into an equivalent set of chunks
-in such a way that the permission that VeriFast is looking for comes to the surface. Notice that the \lstinline!characters(start, count)! chunk describes the same set of
-memory permissions as the following pair of chunks:
+VeriFast now complains that it cannot find the \lstinline|bytes(start, 0)| chunk, while trying to consume the loop invariant upon entry to the loop. We need to explicitly close it. Similarly, we need to open the empty \lstinline|bytes_(start + count, 0)| chunk before the function returns, to avoid a leak error, and we need to open the \lstinline|bytes_(start + i, count - i)| chunk before writing to \lstinline|*start.add(i)|:
 \begin{lstlisting}
-characters(start, i) &*& characters(start + i, count - i)
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
+{
+    //@ close bytes(start, 0);
+    let mut i = 0;
+    loop {
+        //@ inv bytes(start, i) &*& bytes_(start + i, count - i);
+        if i == count { break; }
+        let b = read_byte();
+        //@ open bytes_(start + i, count - i);
+        *start.add(i) = b;
+        i += 1;
+    }
+    //@ open bytes_(start + count, 0);
+}
 \end{lstlisting}
-If we can rewrite the chunk into this form, we can then simply open the \lstinline!characters(start + i, count - i)! chunk to obtain our
-\lstinline!character(start + i, _)! permission.
+VeriFast now complains that it cannot find the \lstinline|bytes(start, i + 1)| chunk while trying to consume the loop invariant after symbolically executing the loop body. We do have a \lstinline|bytes(start, i)| chunk and a \lstinline|points_to(start + i, _)| chunk, so we do have all memory permissions asserted by assertion \lstinline|bytes(start, i + 1)|, but they are not in the form expected by VeriFast.
 
-We can perform this rewrite by first performing \lstinline!i! open operations, to lay bare the first \lstinline!i! characters,
-and then performing \lstinline!i + 1! close operations, to combine these \lstinline!i! characters into a \lstinline!characters(start, i)! chunk.
-To perform these operations, we can write a helper function. A helper function that serves only to perform ghost operations is best written as a
-\emph{lemma function}. A lemma function is like an ordinary C function, except that it starts with the \lstinline!lemma! keyword and it is written
+To put the chunks in the expected form, we need to perform \lstinline|i + 1| \lstinline|open| operations (including the opening of \lstinline|bytes(start + i, 0)|), followed by \lstinline|i + 2| \lstinline|close| operations (including the closing of \lstinline|bytes(start + i + 1, 0)|). 
+
+To do so, we can write a helper function. A helper function that serves only to perform ghost operations is best written as a
+\emph{lemma function}. A lemma function is like an ordinary Rust function, except that it starts with the \lstinline!lem! keyword and it is written
 inside an annotation:
 \begin{lstlisting}
 /*@
-lemma void split_characters_chunk(char *start, int i)
-    requires characters(start, ?count) &*& 0 <= i &*& i <= count;
-    ensures characters(start, i) &*& characters(start + i, count - i);
+lem bytes_add_byte(start: *mut u8)
+    req bytes(start, ?count) &*& *(start + count) |-> ?_;
+    ens bytes(start, count + 1);
 {
-    if (i == 0) {
-        close characters(start, 0);
+    open bytes(start, count);
+    if count == 0 {
+        close bytes(start + 1, 0);
     } else {
-        open characters(start, count);
-        split_characters_chunk(start + 1, i - 1);
-        close characters(start, i);
+        bytes_add_byte(start + 1);
     }
+    close bytes(start, count + 1);
 }
 @*/
 \end{lstlisting}
-Like an ordinary function, a lemma function has a contract and a body. The contract of the above lemma function, \lstinline!split_characters_chunk!,
-states that the function requires a single characters chunk, as well as a value \lstinline!i! that lies between zero and \lstinline!count!, and
-gives back two chunks: one that contains the first \lstinline!i! characters, and one that contains the remaining \lstinline!count - i! characters.
+Notice that this is a recursive lemma function. VeriFast checks that lemma functions terminate. In this case, VeriFast can tell that the recursion terminates because the \emph{derivation depth} of the first chunk asserted by the precondition (i.e. the number of \lstinline|close| operations that one would need to perform to construct this chunk) decreases at each recursive call.
 
-The function implementation first checks if \lstinline!i! equals zero. If it does, the incoming chunk corresponds exactly to the second chunk that needs to be
-returned. The function only needs to generate the first chunk, but since \lstinline!i! equals zero, this is an empty chunk and can be created simply by
-closing it.
-
-In case \lstinline!i! is not equal to zero, the function first opens the incoming chunk. This lays bare the first character (the one at \lstinline!start!) as
-well as the \lstinline!characters! chunk that goes from \lstinline!start + 1! to the end. The function then splits the latter chunk into a part that contains
-the first \lstinline!i - 1! characters and a part that contains the remaining \lstinline!count - i! characters. This latter chunk is the second chunk that needs
-to be returned. Finally, it bundles the \lstinline!character!
-chunk at \lstinline!start! up with the \lstinline!characters(start + 1, i - 1)! chunk that was returned by the recursive call, to obtain the first chunk
-that needs to be returned.
-
-To verify the assignment to \lstinline!*(start + i)! in function \lstinline!getchars!, we now simply need to call the lemma function and then open
-chunk \lstinline!characters(start + i, count - i)!:
+If we try to verify this lemma function, VeriFast complains that it leaks heap chunks, on a path where \lstinline|count + 1| equals 0. But this is an infeasible path, because the \lstinline|count| parameter of a \lstinline|bytes| chunk is never negative. However, VeriFast is not automatically aware of that. To make it aware, we need to add an \emph{invariant lemma} for predicate \lstinline|bytes|:
 \begin{lstlisting}
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+/*@
+lem_auto bytes_count_nonneg()
+    req bytes(?start, ?count);
+    ens bytes(start, count) &*& 0 <= count;
 {
-    for (int i = 0; i < count; i++)
-        //@ invariant characters(start, count) &*& 0 <= i;
-    {
-        char c = getchar();
-        //@ split_characters_chunk(start, i);
-        //@ open characters(start + i, count - i);
-        *(start + i) = c;
+    assume(false); // TODO: implement this lemma
+}
+@*/
+\end{lstlisting}
+An invariant lemma is a particular type of \emph{autolemma}, a lemma that will be applied automatically by VeriFast in certain circumstances. Specifically, an invariant lemma for a predicate $p$ is applied automatically whenever a $p$ assertion is produced. We postpone the implementation of this lemma and instead simply write \lstinline|assume(false);|, for now.
+Make sure to insert this lemma \emph{before} lemma \lstinline|bytes_add_byte|, so that the former is available while verifying the latter.
+
+Lemma \lstinline|bytes_add_byte| now verifies. To complete the verification of function \lstinline|read_bytes|, we need to insert a call of the lemma at the end of the loop body:
+\begin{lstlisting}
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
+{
+    //@ close bytes(start, 0);
+    let mut i = 0;
+    loop {
+        //@ inv bytes(start, i) &*& bytes_(start + i, count - i);
+        if i == count { break; }
+        let b = read_byte();
+        //@ open bytes_(start + i, count - i);
+        *start.add(i) = b;
+        //@ bytes_add_byte(start);
+        i += 1;
     }
+    //@ open bytes_(start + count, 0);
 }
 \end{lstlisting}
 
-VeriFast now accepts the assignment. It now complains when checking the loop invariant at the end of the loop body. It complains that it cannot find chunk
-\lstinline!characters(start, count)!. Notice that this is again a matter of rewriting the symbolic heap: all memory permissions described by
-\lstinline!characters(start, count)! are in fact in the symbolic heap, just not in the packaging in which VeriFast expects them. To satisfy VeriFast,
-we need to first close the \lstinline!characters(start + i, count - i)! chunk again and then call a lemma function that merges the
-\lstinline!characters(start, i)! and \lstinline!characters(start + i, count - i)! chunks back into a single \lstinline!characters(start, count)! chunk.
-
-\begin{exercise}\label{exercise:characters_loop}
-Write the lemma function \lstinline!merge_characters_chunks!. Then insert a call to this function into \lstinline!getchars! so that \lstinline!getchars!
-verifies. Then also rewrite \lstinline!putchars! to use a loop instead of recursion and verify the resulting program.
+\begin{exercise}\label{exercise:bytes_loop}
+Implement lemma \lstinline|bytes_count_nonneg|. Also, rewrite function \lstinline!write_bytes! as well to use a loop instead of recursion, and verify it.
 \end{exercise}
 
 \section{Recursive Loop Proofs}\label{section:recursive-loop-proofs}
@@ -6131,10 +6133,10 @@ unsafe fn write_byte(value: u8)
 /*@
 
 pred bytes_(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
 
 pred bytes(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
 
 @*/
 
@@ -6219,10 +6221,10 @@ unsafe fn write_byte(value: u8)
 /*@
 
 pred bytes_(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
 
 pred bytes(start: *mut u8, count: usize) =
-    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+    if count == 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
 
 @*/
 
@@ -6297,89 +6299,129 @@ fn main()
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:characters_loop}: characters\_loop.c}\label{solution:characters_loop}
+\subsection{Exercise \ref{exercise:bytes_loop}: bytes\_loop.c}\label{solution:bytes_loop}
 
 \begin{lstlisting}
-char getchar(); /*@ requires true; @*/ /*@ ensures true; @*/
-void putchar(char c); /*@ requires true; @*/ /*@ ensures true; @*/
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::io::{Read, Write, stdin, stdout};
+
+unsafe fn read_byte() -> u8
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let mut buf = [0u8];
+    stdin().read_exact(&mut buf[..]).unwrap();
+    buf[0]
+}
+
+unsafe fn write_byte(value: u8)
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let buf = [value];
+    stdout().write(&buf[..]).unwrap();
+}
 
 /*@
-predicate characters(char *start, int count) =
-    count <= 0 ? true : character(start, _) &*& characters(start + 1, count - 1);
+
+pred bytes_(start: *mut u8, count: usize) =
+    if count == 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+
+pred bytes(start: *mut u8, count: usize) =
+    if count == 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+
 @*/
 
-char *malloc(int count);
-    //@ requires true;
-    //@ ensures characters(result, count);
+unsafe fn alloc(count: usize) -> *mut u8
+//@ req 1 <= count;
+//@ ens bytes_(result, count);
+//@ assume_correct
+{
+    let layout = std::alloc::Layout::from_size_align(count, 1).unwrap();
+    let result = std::alloc::alloc(layout);
+    if result.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    result
+}
 
 /*@
 
-lemma void split_characters_chunk(char *start, int i)
-    requires characters(start, ?count) &*& 0 <= i &*& i <= count;
-    ensures characters(start, i) &*& characters(start + i, count - i);
+lem_auto bytes_count_nonneg()
+    req bytes(?start, ?count);
+    ens bytes(start, count) &*& 0 <= count;
 {
-    if (i == 0) {
-        close characters(start, 0);
+    open bytes(start, count);
+    if count != 0 {
+        bytes_count_nonneg();
+    }
+    close bytes(start, count);
+}
+
+lem bytes_add_byte(start: *mut u8)
+    req bytes(start, ?count) &*& *(start + count) |-> ?_;
+    ens bytes(start, count + 1);
+{
+    open bytes(start, count);
+    if count == 0 {
+        close bytes(start + 1, 0);
     } else {
-        open characters(start, count);
-        split_characters_chunk(start + 1, i - 1);
-        close characters(start, i);
+        bytes_add_byte(start + 1);
     }
-}
-
-lemma void merge_characters_chunk(char *start)
-    requires characters(start, ?i) &*& characters(start + i, ?count) &*& 0 <= i &*& 0 <= count;
-    ensures characters(start, i + count);
-{
-    open characters(start, i);
-    if (i != 0) {
-        merge_characters_chunk(start + 1);
-        close characters(start, i + count);
-    }
+    close bytes(start, count + 1);
 }
 
 @*/
 
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
 {
-    for (int i = 0; i < count; i++)
-        //@ invariant characters(start, count) &*& 0 <= i;
-    {
-        char c = getchar();
-        //@ split_characters_chunk(start, i);
-        //@ open characters(start + i, count - i);
-        *(start + i) = c;
-        //@ close characters(start + i, count - i);
-        //@ merge_characters_chunk(start);
+    //@ close bytes(start, 0);
+    let mut i = 0;
+    loop {
+        //@ inv bytes(start, i) &*& bytes_(start + i, count - i);
+        if i == count { break; }
+        let b = read_byte();
+        //@ open bytes_(start + i, count - i);
+        *start.add(i) = b;
+        //@ bytes_add_byte(start);
+        i += 1;
     }
+    //@ open bytes_(start + count, 0);
 }
 
-void putchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn write_bytes(start: *mut u8, count: usize)
+//@ req bytes(start, count);
+//@ ens bytes(start, count);
 {
-    for (int i = 0; i < count; i++)
-        //@ invariant characters(start, count) &*& 0 <= i;
-    {
-        //@ split_characters_chunk(start, i);
-        //@ open characters(start + i, count - i);
-        char c = *(start + i);
-        //@ close characters(start + i, count - i);
-        //@ merge_characters_chunk(start);
-        putchar(c);
+    //@ close bytes(start, 0);
+    let mut i = 0;
+    loop {
+        //@ inv bytes(start, i) &*& bytes(start + i, count - i);
+        if i == count { break; }
+        //@ open bytes(start + i, count - i);
+        let b = *start.add(i);
+        //@ bytes_add_byte(start);
+        write_byte(b);
+        i += 1;
     }
+    //@ open bytes(start + count, 0);
 }
 
-int main() /*@ requires true; @*/ /*@ ensures true; @*/
+fn main()
+//@ req true;
+//@ ens true;
 {
-    char *array = malloc(100);
-    getchars(array, 100);
-    putchars(array, 100);
-    putchars(array, 100);
-    //@ leak characters(array, 100);
-    return 0;
+    unsafe {
+        let array = alloc(100);
+        read_bytes(array, 100);
+        write_bytes(array, 100);
+        write_bytes(array, 100);
+        //@ leak bytes(array, 100);
+    }
 }
 \end{lstlisting}
 
