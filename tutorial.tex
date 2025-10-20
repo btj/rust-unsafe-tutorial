@@ -3283,128 +3283,153 @@ creating it. Use dummy patterns to denote the mutex chunk
 fractions' coefficients in assertions.
 \end{exercise}
 
-\section{Character Arrays}\label{section:arrays}
+\section{Byte Arrays}\label{section:arrays}
 
-Let's verify a program that reads a fixed number of characters
+Let's verify a program that reads a fixed number of bytes
 from standard input and then writes them out twice.
-Here's a version that reads 5 characters:
+Here's a version that reads 5 bytes:
 \begin{lstlisting}
-char getchar();
-void putchar(char c);
+use std::io::{Read, Write, stdin, stdout};
 
-int main()
-{
-    char c1 = getchar();
-    char c2 = getchar();
-    char c3 = getchar();
-    char c4 = getchar();
-    char c5 = getchar();
-    for (int i = 0; i < 2; i++) {
-        putchar(c1);
-        putchar(c2);
-        putchar(c3);
-        putchar(c4);
-        putchar(c5);
+unsafe fn read_byte() -> u8 {
+    let mut buf = [0u8];
+    stdin().read_exact(&mut buf[..]).unwrap();
+    buf[0]
+}
+
+unsafe fn write_byte(value: u8) {
+    let buf = [value];
+    stdout().write(&buf[..]).unwrap();
+}
+
+fn main() {
+    unsafe {
+        let b1 = read_byte();
+        let b2 = read_byte();
+        let b3 = read_byte();
+        let b4 = read_byte();
+        let b5 = read_byte();
+        for _ in 0..2 {
+            write_byte(b1);
+            write_byte(b2);
+            write_byte(b3);
+            write_byte(b4);
+            write_byte(b5);
+        }
     }
-    return 0;
 }
 \end{lstlisting}
-This program works.\footnote{We simplified the return type of \lstinline!getchar! a little bit; the real function returns an int. But this version should compile and run just fine.}
+This program works.
 If we run the program and enter \texttt{Hello}, we get back \texttt{HelloHello}.
 
-However, clearly this approach is not practical for large numbers of characters. One approach that works for large numbers of characters is to use an array of characters. We allocate
-the array using the standard C function \lstinline!malloc! and then read and write the characters using a recursive function. For now, we don't worry about freeing the array at the end
-of the program. Let's first again do a version that reads 5 characters.
+However, clearly this approach is not practical for large numbers of bytes. One approach that works for large numbers of bytes is to use an array of bytes. We allocate
+the array using an \lstinline!alloc! function and then read and write the bytes using a recursive function. For now, we don't worry about freeing the array at the end
+of the program. Let's first again do a version that reads 5 bytes.
 \begin{lstlisting}
-char getchar();
-void putchar(char c);
+use std::alloc::{Layout, alloc, handle_alloc_error};
+unsafe fn read_byte() -> u8 { ... }
+unsafe fn write_byte(value: u8) { ... }
 
-char *malloc(int count);
+unsafe fn alloc(count: usize) -> *mut u8 {
+    let layout = Layout::from_size_align(count, 1).unwrap();
+    let result = alloc(layout);
+    if result.is_null() {
+        handle_alloc_error(layout);
+    }
+    result
+}
 
-void getchars(char *start, int count) {
-    if (count > 0) {
-        char c = getchar();
-        *start = c;
-        getchars(start + 1, count - 1);
+unsafe fn read_bytes(start: *mut u8, count: usize) {
+    if count > 0 {
+        let b = read_byte();
+        *start = b;
+        read_bytes(start.add(1), count - 1);
     }
 }
 
-void putchars(char *start, int count) {
-    if (count > 0) {
-        char c = *start;
-        putchar(c);
-        putchars(start + 1, count - 1);
+unsafe fn write_bytes(start: *mut u8, count: usize) {
+    if count > 0 {
+        let b = *start;
+        write_byte(b);
+        write_bytes(start.add(1), count - 1);
     }
 }
 
-int main() {
-    char *array = malloc(5);
-    getchars(array, 5);
-    putchars(array, 5);
-    putchars(array, 5);
-    return 0;
+fn main() {
+    unsafe {
+        let array = alloc(5);
+        read_bytes(array, 5);
+        write_bytes(array, 5);
+        write_bytes(array, 5);
+    }
 }
 \end{lstlisting}
-This program works.\footnote{We ignore \lstinline!malloc! failures for now.} Now let's verify it.
+This program works. Now let's verify it.
 
 It's always a good approach to simply run VeriFast on the program and see where it complains. If you verify the above program, VeriFast complains that the functions have no contract.
-Let's start by giving each function the simplest possible contract:
+Let's start by giving function \lstinline|read_bytes| the simplest possible contract:
 \begin{lstlisting}
-    //@ requires true;
-    //@ ensures true;
+//@ req true;
+//@ ens true;
 \end{lstlisting}
 
-VeriFast now complains at the following line in function \lstinline!getchars!:
+VeriFast now complains at the following line in function \lstinline!read_bytes!:
 \begin{lstlisting}
-        *start = c;
+        *start = b;
 \end{lstlisting}
-This statement writes character \lstinline!c! into the memory location at address \lstinline!start!.
-Whenever VeriFast sees such a statement, it checks that the function has permission to write to this location.
-Specifically, it checks that a chunk that matches \lstinline!character(start, _)! is present in the symbolic heap.
-In this case, there is no such chunk in the symbolic heap, since the requires clause of \lstinline!getchars! does not
+This statement writes byte \lstinline!b! at the place in memory pointed to by pointer \lstinline!start!.
+Whenever VeriFast sees such a statement, it checks that the function has permission to write to this place.
+Specifically, it checks that a chunk that matches \lstinline!points_to_::<u8>(start, _)! is present in the symbolic heap.
+In this case, there is no such chunk in the symbolic heap, since the requires clause of \lstinline!read_bytes! does not
 mention it and the function also does not get it from anywhere else.
 
-To solve this problem, we need to specify in the requires clause of function \lstinline!getchars! that whoever calls the function
-must give it permission to write to the location at address \lstinline!start!, at least if parameter \lstinline!count! is greater than zero.
+To solve this problem, we need to specify in the requires clause of function \lstinline!read_bytes! that whoever calls the function
+must give it permission to write to the place pointed to by \lstinline!start!, at least if parameter \lstinline!count! is greater than zero.
 As a good citizen, we also give the permission back to the caller when we are done with it, as specified in the ensures clause:
 \begin{lstlisting}
-    //@ requires count > 0 ? character(start, _) : true;
-    //@ ensures count > 0 ? character(start, _) : true;
+//@ req if count > 0 { points_to_(start, _) } else { true };
+//@ ens if count > 0 { points_to(start, _) } else { true };
+\end{lstlisting}
+Notice that in the postcondition, we assert a \lstinline|points_to| chunk (notice the missing trailing underscore). It asserts that the memory has been \emph{initialized}. Function \lstinline|write_bytes| will need to assert this chunk in its precondition, because reading uninitialized memory is an error.
+
+By the way, we can write \lstinline|points_to_| and \lstinline|points_to| assertions more concisely using special \emph{points-to notation}:
+\begin{lstlisting}
+//@ req if count > 0 { *start |-> _ } else { true };
+//@ ens if count > 0 { *start |-> ?_ } else { true };
 \end{lstlisting}
 If we run VeriFast again, we see that VeriFast now accepts the assignment to \lstinline!*start!. However, it now complains at the recursive call of
-\lstinline!getchars!. Indeed, if \lstinline!count! is greater than one, then the recursive call needs permission to access the location at address
+\lstinline!read_bytes!. Indeed, if \lstinline!count! is greater than one, then the recursive call needs permission to access the place pointed to by
 \lstinline!start + 1!. Let's extend our contract to reflect this:
 \begin{lstlisting}
-    //@ requires count > 0 ? character(start, _) &*& (count > 1 ? character(start + 1, _) : true) : true;
-    //@ ensures count > 0 ? character(start, _) &*& (count > 1 ? character(start + 1, _) : true) : true;
+//@ req if count > 0 { *start |-> _ &*& if count > 1 { *(start + 1) |-> _ } else { true } } else { true };
+//@ ens if count > 0 { *start |-> ?_ &*& if count > 1 { *(start + 1) |-> ?_ } else { true } } else { true };
 \end{lstlisting}
 Alas, if we run VeriFast again, we notice VeriFast complains again at the recursive call.\footnote{Remember to disable arithmetic overflow checking in the Verify menu.}
 Indeed, if \lstinline!count! is greater than 2,
-the recursive call now needs to permission to access the location at address \lstinline!start + 2!.
+the recursive call now needs to permission to access the place pointed to by \lstinline!start + 2!.
 
-We can patch up the contract again, but will it ever end? If we step back and think about what \lstinline!getchars! does, we realize that
-a call \lstinline!getchars(start, count)! requires permission to access the locations in the range \lstinline!start! through \lstinline!start + count - 1!.
+We can patch up the contract again, but will it ever end? If we step back and think about what \lstinline!read_bytes! does, we realize that
+a call \lstinline!read_bytes(start, count)! requires permission to access the locations in the range \lstinline!start! through \lstinline!start + count - 1!.
 How can we express this? If we support only up to 5 characters, we can use the following precondition:
 \begin{lstlisting}
-    /*@
-    requires
-        count <= 0 ? true :
-            character(start, _) &*&
-            (count - 1 <= 0 ? true :
-                character(start + 1, _) &*&
-                (count - 2 <= 0 ? true :
-                    character(start + 2, _) &*&
-                    (count - 3 <= 0 ? true :
-                        character(start + 3, _) &*&
-                        (count - 4 <= 0 ? true :
-                            character(start + 4, _) &*&
-                            (count - 5 <= 0 ? true :
-                                false)))));
-    @*/
+/*@
+req if count <= 0 { true } else {
+        *start |-> _ &*&
+        if count - 1 <= 0 { true } else {
+            *(start + 1) |-> _ &*&
+            if count - 2 <= 0 { true } else {
+                *(start + 2) |-> _ &*&
+                if count - 3 <= 0 { true } else {
+                    *(start + 3) |-> _ &*&
+                    if count - 4 <= 0 { true } else {
+                        *(start + 4) |-> _ &*&
+                        if count - 5 <= 0 { true } else {
+                            false}}}}}};
+@*/
 \end{lstlisting}
-If we use this same assertion as the postcondition as well, function \lstinline!getchars! verifies.
-And if we use the same contract for \lstinline!putchars!, that function verifies as well.
-And we can use the same assertion as the postcondition of \lstinline!malloc!, provided that we
+If we use the \lstinline|?_| version of this assertion as the postcondition as well, function \lstinline!read_bytes! verifies.
+And if we use the \lstinline|?_| version of the assertion as the precondition and postcondition for \lstinline!write_bytes! as well, that function verifies as well.
+And we can use the \lstinline|_| version as the postcondition of \lstinline!alloc! as well, provided that we
 replace the variable name \lstinline!start! by \lstinline!result!.
 The only problem left now is that VeriFast complains at the end of function \lstinline!main! that
 we leak five memory locations. We can tell VeriFast that we are happy to do so by inserting the following
@@ -3412,97 +3437,110 @@ ghost statement at the end of the function:
 \begin{lstlisting}
     /*@
     leak
-        character(array, _) &*& character(array + 1, _) &*& character(array + 2, _) &*&
-        character(array + 3, _) &*& character(array + 4, _);
+        *array |-> ?_ &*& *(array + 1) |-> ?_ &*& *(array + 2) |-> ?_ &*&
+        *(array + 3) |-> ?_ &*& *(array + 4) |-> ?_;
     @*/
 \end{lstlisting}
 The program now verifies. Great!
-\begin{exercise}\label{exercise:characters}
+\begin{exercise}\label{exercise:bytes}
 Modify the program so that it reads 100 characters.
 \end{exercise}
 Did you finish the exercise? No? I don't blame you. Of course, writing these contracts for large counts is totally impractical.
 
-The solution is to use \emph{recursive predicates}. Notice that the precondition of \lstinline!getchars! has a recursive structure. By giving a name to the assertion,
+The solution is to use \emph{recursive predicates}. Notice that the precondition of \lstinline!read_bytes! has a recursive structure. By giving a name to the assertion,
 and then using this name in the assertion itself, we can make the assertion go on forever:
 \begin{lstlisting}
-predicate characters(char *start, int count) =
-    count <= 0 ? true : character(start, _) &*& characters(start + 1, count - 1);
-\end{lstlisting}
-You can obtain something very close to the precondition of \lstinline!getchars! by unrolling this predicate five times, i.e. by replacing the occurrence of \lstinline!characters!
-with its definition five times. The only difference is that instead of \lstinline!false!, we get \lstinline!characters(start + 5, count - 5)!. That is, \lstinline!characters! doesn't stop
-at 5 characters; it goes on forever.
+pred bytes_(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
 
-So, let's solve Exercise~\ref{exercise:characters} by using \lstinline!characters! in the contracts:
+pred bytes(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> ?_ &*& bytes_(start + 1, count - 1) };
+\end{lstlisting}
+You can obtain something very close to the precondition of \lstinline!read_bytes! by unrolling predicate \lstinline|bytes_| five times, i.e. by replacing the occurrence of \lstinline!bytes_!
+with its definition five times. The only difference is that instead of \lstinline!false!, we get \lstinline!bytes_(start + 5, count - 5)!. That is, \lstinline!bytes_! doesn't stop
+at 5 bytes; it goes on forever.
+
+So, let's solve Exercise~\ref{exercise:bytes} by using \lstinline!bytes_! and \lstinline|bytes| in the contracts:
 \begin{lstlisting}
-char getchar(); /*@ requires true; @*/ /*@ ensures true; @*/
-void putchar(char c); /*@ requires true; @*/ /*@ ensures true; @*/
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::io::{Read, Write, stdin, stdout};
+
+unsafe fn read_byte() -> u8 /*@ req true; @*/ /*@ ens true; @*/ /*@ assume_correct @*/ { ... }
+unsafe fn write_byte(value: u8) /*@ req true; @*/ /*@ ens true; @*/ /*@ assume_correct @*/ { ... }
 
 /*@
-predicate characters(char *start, int count) =
-    count <= 0 ? true : character(start, _) &*& characters(start + 1, count - 1);
+pred bytes_(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+pred bytes(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
 @*/
 
-char *malloc(int count);
-    //@ requires true;
-    //@ ensures characters(result, count);
+unsafe fn alloc(count: usize) -> *mut u8
+//@ req 1 <= count;
+//@ ens bytes_(result, count);
+//@ assume_correct
+{ ... }
 
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
 {
-    if (count > 0) {
-        char c = getchar();
-        *start = c;
-        getchars(start + 1, count - 1);
+    if count > 0 {
+        let b = read_byte();
+        *start = b;
+        read_bytes(start.add(1), count - 1);
     }
 }
 
-void putchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn write_bytes(start: *mut u8, count: usize)
+//@ req bytes(start, count);
+//@ ens bytes(start, count);
 {
-    if (count > 0) {
-        char c = *start;
-        putchar(c);
-        putchars(start + 1, count - 1);
+    if count > 0 {
+        let b = *start;
+        write_byte(b);
+        write_bytes(start.add(1), count - 1);
     }
 }
 
-int main() /*@ requires true; @*/ /*@ ensures true; @*/
+fn main()
+//@ req true;
+//@ ens true;
 {
-    char *array = malloc(100);
-    getchars(array, 100);
-    putchars(array, 100);
-    putchars(array, 100);
-    //@ leak characters(array, 100);
-    return 0;
+    unsafe {
+        let array = alloc(100);
+        read_bytes(array, 100);
+        write_bytes(array, 100);
+        write_bytes(array, 100);
+        //@ leak bytes(array, 100);
+    }
 }
 \end{lstlisting}
-This doesn't quite work yet. The problem is that VeriFast does not automatically replace a \lstinline!characters! chunk with its definition, or vice versa. You need to do this explicitly by inserting
+This doesn't quite work yet. The problem is that VeriFast does not automatically replace a \lstinline!bytes_! or \lstinline|bytes| chunk with its definition, or vice versa. You need to do this explicitly by inserting
 \lstinline!open! and \lstinline!close! ghost commands. For example, when you run VeriFast on the above program, VeriFast complains at the assignment to \lstinline!*start! in function
-\lstinline!getchars! because it cannot find a chunk matching \lstinline!character(start, _)!. This chunk is in fact present; it's just that it is hidden inside the \lstinline!characters! chunk. We need to
-open up the \lstinline!characters! chunk so that VeriFast can see the \lstinline!character! chunk that is inside of it.
-The following version of function \lstinline!getchars! verifies:
+\lstinline!read_bytes! because it cannot find a chunk matching \lstinline!points_to_(start, _)!. This chunk is in fact present; it's just that it is hidden inside the \lstinline!bytes_! chunk. We need to
+open up the \lstinline!bytes_! chunk so that VeriFast can see the \lstinline!points_to_! chunk that is inside of it.
+The following version of function \lstinline!read_bytes! verifies:
 \begin{lstlisting}
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
 {
-    if (count > 0) {
-        //@ open characters(start, count);
-        char c = getchar();
-        *start = c;
-        getchars(start + 1, count - 1);
-        //@ close characters(start, count);
+    //@ open bytes_(start, count);
+    if count > 0 {
+        let b = read_byte();
+        *start = b;
+        read_bytes(start.add(1), count - 1);
     }
+    //@ close bytes(start, count);
 }
 \end{lstlisting}
-Inserting the same commands in function \lstinline!putchars! yields a correct solution of Exercise~\ref{exercise:characters}.
+Inserting analogous commands in function \lstinline!write_bytes! yields a correct solution of Exercise~\ref{exercise:characters}.
 
 \begin{exercise}\label{exercise:xor}
-Implement and verify a simple encryption/decryption program. The program should read two arrays of 10 characters from standard input.
-It should then replace each character in the first array with the XOR of the character and the corresponding character in the second array. Write a recursive function to do this.
-It should then write the first array to standard output. The XOR of two characters \lstinline!c1! and \lstinline!c2! can be written in C as \lstinline!(char)(c1 ^ c2)!.
+Implement and verify a simple encryption/decryption program. The program should read two arrays of 10 bytes from standard input.
+It should then replace each byte in the first array with the XOR of the byte and the corresponding byte in the second array. Write a recursive function to do this.
+It should then write the first array to standard output. The XOR of two bytes \lstinline!b1! and \lstinline!b2! can be written in Rust as \lstinline!b1 ^ b2)!.
 \end{exercise}
 
 \section{Looping over an Array}\label{section:array-loops}
@@ -6065,125 +6103,197 @@ fn main()
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:characters}: characters.c}\label{solution:characters}
+\subsection{Exercise \ref{exercise:bytes}: bytes.rs}\label{solution:characters}
 
 \begin{lstlisting}
-char getchar(); /*@ requires true; @*/ /*@ ensures true; @*/
-void putchar(char c); /*@ requires true; @*/ /*@ ensures true; @*/
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::io::{Read, Write, stdin, stdout};
+
+unsafe fn read_byte() -> u8
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let mut buf = [0u8];
+    stdin().read_exact(&mut buf[..]).unwrap();
+    buf[0]
+}
+
+unsafe fn write_byte(value: u8)
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let buf = [value];
+    stdout().write(&buf[..]).unwrap();
+}
 
 /*@
-predicate characters(char *start, int count) =
-    count <= 0 ? true : character(start, _) &*& characters(start + 1, count - 1);
+
+pred bytes_(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+
+pred bytes(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+
 @*/
 
-char *malloc(int count);
-    //@ requires true;
-    //@ ensures characters(result, count);
-
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn alloc(count: usize) -> *mut u8
+//@ req 1 <= count;
+//@ ens bytes_(result, count);
+//@ assume_correct
 {
-    if (count > 0) {
-        //@ open characters(start, count);
-        char c = getchar();
-        *start = c;
-        getchars(start + 1, count - 1);
-        //@ close characters(start, count);
+    let layout = std::alloc::Layout::from_size_align(count, 1).unwrap();
+    let result = std::alloc::alloc(layout);
+    if result.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    result
+}
+
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
+{
+    //@ open bytes_(start, count);
+    if count > 0 {
+        let b = read_byte();
+        *start = b;
+        read_bytes(start.add(1), count - 1);
+    }
+    //@ close bytes(start, count);
+}
+
+unsafe fn write_bytes(start: *mut u8, count: usize)
+//@ req bytes(start, count);
+//@ ens bytes(start, count);
+{
+    if count > 0 {
+        //@ open bytes(start, count);
+        let b = *start;
+        write_byte(b);
+        write_bytes(start.add(1), count - 1);
+        //@ close bytes(start, count);
     }
 }
 
-void putchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+fn main()
+//@ req true;
+//@ ens true;
 {
-    if (count > 0) {
-        //@ open characters(start, count);
-        char c = *start;
-        putchar(c);
-        putchars(start + 1, count - 1);
-        //@ close characters(start, count);
+    unsafe {
+        let array = alloc(100);
+        read_bytes(array, 100);
+        write_bytes(array, 100);
+        write_bytes(array, 100);
+        //@ leak bytes(array, 100);
     }
-}
-
-int main()
-    //@ requires true;
-    //@ ensures true;
-{
-    char *array = malloc(100);
-    getchars(array, 100);
-    putchars(array, 100);
-    putchars(array, 100);
-    //@ leak characters(array, 100);
-    return 0;
 }
 \end{lstlisting}
 
-\subsection{Exercise \ref{exercise:xor}: xor.c}\label{solution:xor}
+\subsection{Exercise \ref{exercise:xor}: xor.rs}\label{solution:xor}
 
 \begin{lstlisting}
-char getchar(); /*@ requires true; @*/ /*@ ensures true; @*/
-void putchar(char c); /*@ requires true; @*/ /*@ ensures true; @*/
+// verifast_options{ignore_unwind_paths disable_overflow_check}
+use std::io::{Read, Write, stdin, stdout};
+
+unsafe fn read_byte() -> u8
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let mut buf = [0u8];
+    stdin().read_exact(&mut buf[..]).unwrap();
+    buf[0]
+}
+
+unsafe fn write_byte(value: u8)
+//@ req true;
+//@ ens true;
+//@ assume_correct
+{
+    let buf = [value];
+    stdout().write(&buf[..]).unwrap();
+}
 
 /*@
-predicate characters(char *start, int count) =
-    count <= 0 ? true : character(start, _) &*& characters(start + 1, count - 1);
+
+pred bytes_(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> _ &*& bytes_(start + 1, count - 1) };
+
+pred bytes(start: *mut u8, count: usize) =
+    if count <= 0 { true } else { *start |-> ?_ &*& bytes(start + 1, count - 1) };
+
 @*/
 
-char *malloc(int count);
-    //@ requires true;
-    //@ ensures characters(result, count);
-
-void getchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+unsafe fn alloc(count: usize) -> *mut u8
+//@ req 1 <= count;
+//@ ens bytes_(result, count);
+//@ assume_correct
 {
-    if (count > 0) {
-        //@ open characters(start, count);
-        char c = getchar();
-        *start = c;
-        getchars(start + 1, count - 1);
-        //@ close characters(start, count);
+    let layout = std::alloc::Layout::from_size_align(count, 1).unwrap();
+    let result = std::alloc::alloc(layout);
+    if result.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    result
+}
+
+unsafe fn read_bytes(start: *mut u8, count: usize)
+//@ req bytes_(start, count);
+//@ ens bytes(start, count);
+{
+    //@ open bytes_(start, count);
+    if count > 0 {
+        let b = read_byte();
+        *start = b;
+        read_bytes(start.add(1), count - 1);
+    }
+    //@ close bytes(start, count);
+}
+
+unsafe fn xor_bytes(text: *mut u8, key: *mut u8, count: usize)
+//@ req bytes(text, count) &*& bytes(key, count);
+//@ ens bytes(text, count) &*& bytes(key, count);
+{
+    if count > 0 {
+        //@ open bytes(text, count);
+        //@ open bytes(key, count);
+        let t = *text;
+        let k = *key;
+        *text = t ^ k;
+        xor_bytes(text.add(1), key.add(1), count - 1);
+        //@ close bytes(text, count);
+        //@ close bytes(key, count);
     }
 }
 
-void xorchars(char *text, char *key, int count)
-    //@ requires characters(text, count) &*& characters(key, count);
-    //@ ensures characters(text, count) &*& characters(key, count);
+unsafe fn write_bytes(start: *mut u8, count: usize)
+//@ req bytes(start, count);
+//@ ens bytes(start, count);
 {
-    if (count > 0) {
-        //@ open characters(text, count);
-        //@ open characters(key, count);
-        *text = (char)(*text ^ *key);
-        xorchars(text + 1, key + 1, count - 1);
-        //@ close characters(text, count);
-        //@ close characters(key, count);
+    if count > 0 {
+        //@ open bytes(start, count);
+        let b = *start;
+        write_byte(b);
+        write_bytes(start.add(1), count - 1);
+        //@ close bytes(start, count);
     }
 }
 
-void putchars(char *start, int count)
-    //@ requires characters(start, count);
-    //@ ensures characters(start, count);
+fn main()
+//@ req true;
+//@ ens true;
 {
-    if (count > 0) {
-        //@ open characters(start, count);
-        char c = *start;
-        putchar(c);
-        putchars(start + 1, count - 1);
-        //@ close characters(start, count);
+    unsafe {
+        let text = alloc(10);
+        let key = alloc(10);
+        read_bytes(text, 10);
+        read_bytes(key, 10);
+        xor_bytes(text, key, 10);
+        write_bytes(text, 10);
+        //@ leak bytes(text, 10) &*& bytes(key, 10);
     }
-}
-
-int main() /*@ requires true; @*/ /*@ ensures true; @*/
-{
-    char *text = malloc(10);
-    char *key = malloc(10);
-    getchars(text, 10);
-    getchars(key, 10);
-    xorchars(text, key, 10);
-    putchars(text, 10);
-    //@ leak characters(text, 10) &*& characters(key, 10);
-    return 0;
 }
 \end{lstlisting}
 
