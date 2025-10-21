@@ -3727,8 +3727,10 @@ unsafe fn read_bytes(start: *mut u8, count: usize)
     //@ ens bytes(start + old_i, count - old_i);
     {
         //@ open bytes_(start + i, count - i);
-        //@ if i == count { close bytes(start + i, 0); }
-        if i == count { return; }
+        if i == count {
+            //@ close bytes(start + i, 0);
+            return;
+        }
         let b = read_byte();
         *start.add(i) = b;
         i += 1;
@@ -3739,7 +3741,7 @@ unsafe fn read_bytes(start: *mut u8, count: usize)
 }
 \end{lstlisting}
 Notice that we use variable names prefixed by \lstinline!old_! to refer to the value of the variable at the start of the function call.
-VeriFast currently does not support local functions, but if it did, this function would verify successfully.\footnote{Notice that we are not writing \lstinline|close bytes(start + i, 0);| inside the \lstinline|if| statement that exits the loop. This works around a VeriFast bug; see \url{https://github.com/verifast/verifast/issues/934}.}
+VeriFast currently does not support local functions, but if it did, this function would verify successfully.
 
 All that now remains to be done in order to verify the version of \lstinline!read_bytes! that uses a loop, is to transplant the
 annotations that we inserted for the recursive function, back into the loop version:
@@ -3755,8 +3757,10 @@ unsafe fn read_bytes(start: *mut u8, count: usize)
         ens bytes(start + old_i, count - old_i);
         @*/
         //@ open bytes_(start + i, count - i);
-        //@ if i == count { close bytes(start + i, 0); }
-        if i == count { break; }
+        if i == count {
+            //@ close bytes(start + i, 0);
+            break;
+        }
         let b = read_byte();
         *start.add(i) = b;
         i += 1;
@@ -3774,135 +3778,161 @@ Write a version of function \lstinline!write_bytes! that uses a loop and verify 
 
 \begin{exercise}\label{exercise:stack_tuerk}
 Verify function \lstinline!Stack::get_count! from Section~\ref{section:lemmas} using a loop contract. You do not need
-the \lstinline!lseg! predicate or any lemmas for this proof! Remember that, due to a bug\footnote{\url{https://github.com/verifast/verifast/issues/934}}, VeriFast currently treats code on control-flow paths that exit a loop as outside the loop, so make sure that if a ghost command should be executed before the loop's postcondition is checked, you write it on a looping control-flow path, i.e. \emph{before} the \lstinline|if| statement that exits the loop.
+the \lstinline!lseg! predicate or any lemmas for this proof!
 \end{exercise}
 
 \section{Tracking Array Contents}\label{section:memcpy}
 
 Suppose we wish to verify functional correctness of the
-following implementation of the \lstinline|memcpy| function,
-which copies the contents of one character array into another
+following implementation of the \lstinline|copy_nonoverlapping| function,
+which copies the contents of one byte array into another
 one.
 
 \begin{lstlisting}
-void memcpy(char *dest, char *src, int count) {
-    for (int i = 0; i < count; i++) {
-        dest[i] = src[i];
+unsafe fn copy_nonoverlapping(src: *const u8, dst: *mut u8, count: usize) {
+    for i in 0..count {
+        *dst.add(i) = *src.add(i);
     }
 }
 \end{lstlisting}
 
 To specify functional correctness, the contract for
-\lstinline|memcpy| must express that when the function returns,
-the contents of the \lstinline|dest| array are equal to the
+\lstinline|copy_nonoverlapping| must express that when the function returns,
+the contents of the \lstinline|dst| array are equal to the
 contents of the \lstinline|src| array. This means that we
-cannot use the \lstinline|characters| predicate from the
+cannot use the \lstinline|bytes| predicate from the
 preceding sections, since that predicate specifies only the
-size of a character array, and not its contents. We must add a
-predicate parameter that specifies the list of characters held
+size of a byte array, and not its contents. We must add a
+predicate parameter that specifies the list of bytes held
 by the array:
 \begin{lstlisting}
-predicate chars(char *array, int count; list<char> cs) =
-    count == 0 ?
-        cs == nil
-    :
-        character(array, ?c) &*& chars(array + 1, count - 1, ?cs0) &*& cs == cons(c, cs0);
+pred array<T>(p: *T, count: usize; values: list<T>) =
+    if count == 0 {
+        values == nil
+    } else {
+        *p |-> ?value &*& array(p + 1, count - 1, ?values0) &*& values == cons(value, values0)
+    };
 \end{lstlisting}
+(We went ahead and also made the predicate generic in the element type.)
 We can use this predicate to fully specify the behavior of the
-\lstinline|memcpy| function as follows:
+\lstinline|copy_nonoverlapping| function as follows:
 \begin{lstlisting}
-void memcpy(char *dest, char *src, int count)
-    //@ requires chars(dest, count, _) &*& [?f]chars(src, count, ?cs);
-    //@ ensures chars(dest, count, cs) &*& [f]chars(src, count, cs);
+unsafe fn copy_nonoverlapping(src: *const u8, dst: *mut u8, count: usize)
+//@ req [?f]array(src, count, ?bs) &*& array_(dst, count, _);
+//@ ens [f]array(src, count, bs) &*& array(dst, count, bs);
 \end{lstlisting}
-This predicate is in fact the ``official'' character array
-predicate in VeriFast: it is declared in \lstinline|prelude.h|,
-along with a number of useful lemmas, and it is used by
+This contract also uses an \lstinline|array_| predicate, asserting a possibly uninitialized array,
+defined as follows:
+\begin{lstlisting}
+pred array_<T>(p: *T, count: usize; values: list<option<T>>) =
+    if count == 0 {
+        values == nil
+    } else {
+        points_to_(p, ?value) &*& array_(p + 1, count - 1, ?values0) &*& values == cons(value, values0)
+    };
+\end{lstlisting}
+These predicates are in fact (almost\footnote{The official predicates also assert that the pointer is \emph{within the limits of its provenance}, even if the count is zero.}) the ``official'' array
+predicates in VeriFast: they are declared in \lstinline|prelude_core.rsspec|,
+along with a number of useful lemmas, and they are used by
 VeriFast for certain purposes. For example, the following
 function verifies given the above contract for
-\lstinline|memcpy|:
+\lstinline|copy_nonoverlapping|:
 \begin{lstlisting}
-void test()
-    //@ requires true;
-    //@ ensures true;
+fn main()
+//@ req true;
+//@ ens true;
 {
-    char buffer1[7] = "Hello!";
-    char buffer2[7];
-    memcpy(buffer2, buffer1, 7);
-    assert(buffer2[5] == '!');
+    unsafe {
+        let buffer1: [u8; _] = [10, 20, 30];
+        let buffer2 = alloc(Layout::from_size_align_unchecked(3, 1));
+        if buffer2.is_null() {
+            handle_alloc_error(Layout::from_size_align_unchecked(3, 1));
+        }
+        copy_nonoverlapping(&raw const buffer1 as *const u8, buffer2, 3);
+        //@ open array(buffer2, 3, _);
+        std::hint::assert_unchecked(*buffer2.add(1) == 20);
+        //@ close array(buffer2, 3, _);
+        //@ array_to_array_(buffer2);
+        dealloc(buffer2, Layout::from_size_align_unchecked(3, 1));
+        //@ array_to_array_(&buffer1 as *u8);
+    }
 }
 \end{lstlisting}
-Indeed, declaring a local character array causes VeriFast to
-produce a \lstinline|chars| chunk.
+Indeed, declaring a local array causes VeriFast to
+produce an \lstinline|array| chunk, and function \lstinline|alloc|
+is specified in \lstinline|rust/std/lib.rsspec| to produce an \lstinline|array_| chunk.
 
-Notice the semicolon in the definition of predicate
-\lstinline|chars|: this means it is declared as precise with
-two input parameters (\lstinline|array| and \lstinline|count|)
-and one output parameter (\lstinline|cs|). As explained in
+Notice the semicolon in the definition of these predicates:
+this means they are declared as \emph{precise} with
+two input parameters (\lstinline|p| and \lstinline|count|)
+and one output parameter (\lstinline|values|). As explained in
 Sections~\ref{section:precise} and
 \ref{section:auto-open-close}, it follows that VeriFast will
-merge \lstinline|chars| fractions and automatically
-\lstinline|open| and \lstinline|close| \lstinline|chars| chunks
+merge fractions of these predicates and automatically
+\lstinline|open| and \lstinline|close| them
 in certain circumstances.
 
 VeriFast supports \emph{array slice syntax} to improve the
-readability of assertions about \lstinline|chars| chunks. The
-notation \lstinline$a[i..n] |-> ?vs$ where \lstinline|a| is of
-type \lstinline|char *| is equivalent to %
-\lstinline$chars(a + i, n - i, ?vs)$. Using array slice syntax,
-we can write the contract of function \lstinline|memcpy|
+readability of assertions about array chunks. The
+notation \lstinline$a[i..n] |-> ?vs$ is equivalent to %
+\lstinline$array(a + i, n - i, ?vs)$, and \lstinline$a[i..n] |-> _$ is equivalent
+to \lstinline$array_(a + i, n - i, _)$. Using array slice syntax,
+we can write the contract of function \lstinline|copy_nonoverlapping|
 somewhat more readably as follows:
 \begin{lstlisting}
-void memcpy(char *dest, char *src, int count)
-    //@ requires dest[0..count] |-> _ &*& [?f]src[0..count] |-> ?cs;
-    //@ ensures dest[0..count] |-> cs &*& [f]src[0..count] |-> cs;
+unsafe fn copy_nonoverlapping(src: *const u8, dst: *mut u8, count: usize)
+//@ req [?f]src[..count] |-> ?bs &*& dst[..count] |-> _;
+//@ ens [f]src[..count] |-> bs &*& dst[..count] |-> bs;
 \end{lstlisting}
 
 We can now verify the implementation. As so often when working
 with arrays, it pays off to use loop contracts instead of loop
 invariants (see Section~\ref{section:recursive-loop-proofs}).
 \begin{lstlisting}
-void memcpy(char *dest, char *src, int count)
-    //@ requires dest[0..count] |-> _ &*& [?f]src[0..count] |-> ?cs;
-    //@ ensures dest[0..count] |-> cs &*& [f]src[0..count] |-> cs;
+unsafe fn copy_nonoverlapping(src: *const u8, dst: *mut u8, count: usize)
+//@ req [?f]src[..count] |-> ?bs &*& dst[..count] |-> _;
+//@ ens [f]src[..count] |-> bs &*& dst[..count] |-> bs;
 {
-    for (int i = 0; ; i++)
-        //@ requires dest[i..count] |-> _ &*& [f]src[i..count] |-> ?cs0;
-        //@ ensures dest[old_i..count] |-> cs0 &*& [f]src[old_i..count] |-> cs0;
-    {
-        //@ open chars(dest + i, _, _);
-        //@ open chars(src + i, _, _);
-        if (i == count) {
-            break;
-        }
-        dest[i] = src[i];
+    let mut i = 0;
+    loop {
+        /*@
+        req [?f1]src[i..count] |-> ?bs1 &*& dst[i..count] |-> _;
+        ens [f1]src[old_i..count] |-> bs1 &*& dst[old_i..count] |-> bs1;
+        @*/
+        //@ open array(src + i, count - i, _);
+        //@ open array_(dst + i, count - i, _);
+        if i == count { break; }
+        *dst.add(i) = *src.add(i);
+        i += 1;
     }
 }
 \end{lstlisting}
-Notice that, as usual when using loop contracts, we had to move
-the loop condition into the loop body so that we could insert
-ghost commands before the loop exit (i.e., the
-\lstinline|break| statement).
+We replaced the \lstinline|for| loop by a \lstinline|loop| loop because VeriFast supports only \lstinline|loop| loops
+for now.
 
 \begin{exercise}\label{exercise:memcmp}
 Specify and verify that the following implementation of
 function \lstinline|memcmp| returns zero if and only if the two
 arrays have the same contents.
 \begin{lstlisting}
-int memcmp(char *p1, char *p2, int count) {
-    int result = 0;
-    for (int i = 0; ; i++) {
-        if (i == count) {
+unsafe fn memcmp(p1: *const u8, p2: *const u8, count: usize) -> i32 {
+    let mut result = 0;
+    let mut i = 0;
+    loop {
+        if i == count {
             break;
         }
-        if (p1[i] < p2[i]) {
-            result = -1; break;
+        if *p1.add(i) < *p2.add(i) {
+            result = -1;
+            break;
         }
-        if (p1[i] > p2[i]) {
-            result = 1; break;
+        if *p1.add(i) > *p2.add(i) {
+            result = 1;
+            break;
         }
+        i += 1;
     }
-    return result;
+    result
 }
 \end{lstlisting}
 \end{exercise}
@@ -6452,8 +6482,8 @@ unsafe fn stack_get_count(stack: *mut Stack) -> i32
         ens Nodes(old_n, count1) &*& i == old_i + count1;
         @*/
         //@ open Nodes(n, count1);
-        //@ if n == 0 { close Nodes(n, count1); }
         if n.is_null() {
+            //@ close Nodes(n, count1);
             break;
         }
         n = (*n).next;
@@ -6467,40 +6497,38 @@ unsafe fn stack_get_count(stack: *mut Stack) -> i32
 \end{lstlisting}
 
 \subsection{Exercise \ref{exercise:memcmp}:
-memcmp.c}\label{solution:memcmp}
+memcmp.rs}\label{solution:memcmp}
 
 \begin{lstlisting}
-int memcmp(char *p1, char *p2, int count)
-    //@ requires [?f1]p1[0..count] |-> ?cs1 &*& [?f2]p2[0..count] |-> ?cs2;
-    /*@
-    ensures
-        [f1]p1[0..count] |-> cs1 &*& [f2]p2[0..count] |-> cs2 &*&
-        true == ((result == 0) == (cs1 == cs2));
-    @*/
+unsafe fn memcmp(p1: *const u8, p2: *const u8, count: usize) -> i32
+//@ req [?f1]p1[0..count] |-> ?cs1 &*& [?f2]p2[0..count] |-> ?cs2;
+//@ ens [f1]p1[0..count] |-> cs1 &*& [f2]p2[0..count] |-> cs2 &*& (result == 0) == (cs1 == cs2);
 {
-    int result = 0;
-    for (int i = 0; ; i++)
-        //@ requires [f1]p1[i..count] |-> ?xs1 &*& [f2]p2[i..count] |-> ?xs2 &*& result == 0;
+    let mut result = 0;
+    let mut i = 0;
+    loop {
         /*@
-        ensures
-            [f1]p1[old_i..count] |-> xs1 &*& [f2]p2[old_i..count] |-> xs2 &*&
-            true == ((result == 0) == (xs1 == xs2));
+        req [f1]p1[i..count] |-> ?xs1 &*& [f2]p2[i..count] |-> ?xs2 &*& result == 0;
+        ens [f1]p1[old_i..count] |-> xs1 &*& [f2]p2[old_i..count] |-> xs2 &*& (result == 0) == (xs1 == xs2);
         @*/
-    {
-        //@ open chars(p1 + i, _, _);
-        //@ open chars(p2 + i, _, _);
-        if (i == count) {
+        //@ open array(p1 + i, _, _);
+        //@ open array(p2 + i, _, _);
+        if i == count {
             break;
         }
-        if (p1[i] < p2[i]) {
-            result = -1; break;
+        if *p1.add(i) < *p2.add(i) {
+            result = -1;
+            break;
         }
-        if (p1[i] > p2[i]) {
-            result = 1; break;
+        if *p1.add(i) > *p2.add(i) {
+            result = 1;
+            break;
         }
+        i += 1;
     }
-    return result;
-}\end{lstlisting}
+    result
+}
+\end{lstlisting}
 
 \subsection{Exercise \ref{exercise:strlen}: strlen.c}\label{solution:strlen}
 
