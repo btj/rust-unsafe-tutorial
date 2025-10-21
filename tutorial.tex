@@ -65,7 +65,7 @@ indicates the location of a potential error. If the tool
 reports ``0 errors found'', this means\footnote{There are a few
 known reasons (known as \emph{unsoundnesses}) why the tool may
 sometimes incorrectly report ``0 errors found''; see \textsf{soundness.md} and \textsf{tests/rust/README.md} at \textsf{https://github.com/verifast/verifast} and \url{https://github.com/verifast/verifast/issues?q=is\%3Aissue\%20state\%3Aopen\%20label\%3Aunsoundness}. There
-may also be unknown unsoundnesses.} that the program
+may also be unknown unsoundnesses.}, among other things, that the program
 \begin{itemize}
 \item does not perform illegal memory accesses, such as reading or
     writing a struct instance field after the struct instance has been
@@ -115,7 +115,7 @@ the use of loop invariants each loop body needs to be symbolically
 executed only once, and symbolically executing a function call uses only
 the function's precondition and postcondition, not its body.
 
-We will now proceed to introduce the tool's features step by
+We will now proceed to introduce the tool's features for verifying purely \lstinline|unsafe| programs step by
 step. To try the examples and exercises in this tutorial
 yourself, please download the release from the VeriFast website
 at
@@ -127,6 +127,13 @@ the tool (\texttt{verifast.exe}), and a version that presents a graphical
 user interface (\texttt{vfide.exe}).
 
 Throughout this tutorial, you will find exercises that ask you to annotate a small Rust program so that it is accepted by VeriFast. You can find solutions to all exercises at the end of this tutorial. Furthermore, un-annotated and annotated versions of each solution are included in the VeriFast distribution in directories \verb|rust_tutorials/unsafe/problems| and \verb|rust_tutorials/unsafe/solutions|, respectively.
+
+Note: In this tutorial, we do not address the following complexities of verifying Rust programs:
+\begin{itemize}
+\item We do not verify that the cleanup performed during stack unwinding after a panic is safe, because VeriFast does not yet have good support for doing so.\footnote{\url{https://github.com/verifast/verifast/issues/859}} Therefore, we run VeriFast with the \verb|-ignore_unwind_paths| flag. This is sound only when compiling with \verb|-C panic=abort|.
+\item We avoid creating shared references, mutable references, or boxes, so that we can ignore Rust's pointer aliasing rules and rules on mutating immutable bytes\footnote{\url{https://doc.rust-lang.org/reference/behavior-considered-undefined.html}}. So far, VeriFast has only partial support for verifying compliance with these rules.\footnote{\url{https://github.com/verifast/verifast/issues/685}}
+\item We avoid verifying non-\lstinline|unsafe| functions, which involves verifying that they are \emph{sound}\footnote{\url{https://doc.rust-lang.org/nomicon/working-with-unsafe.html}}, i.e.~safe for use by code verified only by the Rust type checker. Resources on this topic are available elsewhere\footnote{\url{https://verifast.github.io/verifast/rust-reference/non-unsafe-funcs.html}}.
+\end{itemize}
 
 \section{Example: illegal\_access.rs}
 
@@ -1299,7 +1306,7 @@ inductive parameter of the caller.
 \section{Lemmas}\label{section:lemmas}
 
 \emph{Note: Sections~\ref{section:arrays} to
-\ref{section:strings} offer an alternative introduction to
+\ref{section:memcpy} offer an alternative introduction to
 recursive predicates. If you are not yet comfortable with
 recursive predicates, refer to these sections before starting
 the present section.}
@@ -3535,7 +3542,7 @@ unsafe fn read_bytes(start: *mut u8, count: usize)
     //@ close bytes(start, count);
 }
 \end{lstlisting}
-Inserting analogous commands in function \lstinline!write_bytes! yields a correct solution of Exercise~\ref{exercise:characters}.
+Inserting analogous commands in function \lstinline!write_bytes! yields a correct solution of Exercise~\ref{exercise:bytes}.
 
 \begin{exercise}\label{exercise:xor}
 Implement and verify a simple encryption/decryption program. The program should read two arrays of 10 bytes from standard input.
