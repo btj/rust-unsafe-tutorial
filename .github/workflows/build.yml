@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: registry.gitlab.com/islandoftex/images/texlive:TL2024-2025-01-05-medium@sha256:3c51378a5396fefbeb722c347450660e9a9b5539ffbfcf5da13df7c6a22cb0e3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install getnonfreefonts
+        run: |
+          curl -L https://www.tug.org/fonts/getnonfreefonts/install-getnonfreefonts -o install-getnonfreefonts
+          texlua install-getnonfreefonts
+
+      - name: Install Luximono
+        run: |
+          PATH=/usr/local/texlive/2024/bin/x86_64-linux:$PATH; export PATH
+          getnonfreefonts --sys luximono
+
+      - name: Build PDF
+        shell: bash
+        run: |
+          pdflatex tutorial.tex
+          pdflatex tutorial.tex
+          pdflatex tutorial.tex
+
+      - uses: actions/upload-artifact@v4.5.0
+        with:
+          path: tutorial.pdf
+          if-no-files-found: error
